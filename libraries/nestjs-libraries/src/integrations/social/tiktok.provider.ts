@@ -34,8 +34,13 @@ export interface TikTokCreatorInfo {
   maxVideoPostDurationSeconds: number;
 }
 
+const TIKTOK_PUBLISH_STATUS_MAX_ATTEMPTS = 30;
+const TIKTOK_PUBLISH_STATUS_POLL_INTERVAL_MS = 10_000;
+const TIKTOK_URL_OWNERSHIP_MESSAGE =
+  'TikTok could not access the media because its URL prefix is not verified. Verify the Postiz uploads URL prefix in TikTok Developer Portal, then retry.';
+
 @Rules(
-  'TikTok can have one video or one picture or multiple pictures, it cannot be without an attachment'
+  'TikTok can have one video or one picture or multiple pictures, it cannot be without an attachment',
 )
 export class TiktokProvider extends SocialAbstract implements SocialProvider {
   identifier = 'tiktok';
@@ -203,7 +208,7 @@ export class TiktokProvider extends SocialAbstract implements SocialProvider {
     if (body.indexOf('url_ownership_unverified') > -1) {
       return {
         type: 'bad-body' as const,
-        value: 'You have to upload the picture/video to Postiz when sending a URL',
+        value: TIKTOK_URL_OWNERSHIP_MESSAGE,
       };
     }
 
@@ -256,9 +261,14 @@ export class TiktokProvider extends SocialAbstract implements SocialProvider {
     return undefined;
   }
 
-  async refreshToken(refreshToken: string, clientCredentials?: { clientId: string; clientSecret: string }): Promise<AuthTokenDetails> {
-    const clientKey = clientCredentials?.clientId ?? process.env.TIKTOK_CLIENT_ID!;
-    const clientSecret = clientCredentials?.clientSecret ?? process.env.TIKTOK_CLIENT_SECRET!;
+  async refreshToken(
+    refreshToken: string,
+    clientCredentials?: { clientId: string; clientSecret: string },
+  ): Promise<AuthTokenDetails> {
+    const clientKey =
+      clientCredentials?.clientId ?? process.env.TIKTOK_CLIENT_ID!;
+    const clientSecret =
+      clientCredentials?.clientSecret ?? process.env.TIKTOK_CLIENT_SECRET!;
 
     const value = {
       client_key: clientKey,
@@ -289,7 +299,7 @@ export class TiktokProvider extends SocialAbstract implements SocialProvider {
           headers: {
             Authorization: `Bearer ${access_token}`,
           },
-        }
+        },
       )
     ).json();
 
@@ -306,7 +316,8 @@ export class TiktokProvider extends SocialAbstract implements SocialProvider {
 
   async generateAuthUrl(clientInformation?: ClientInformation) {
     const state = Math.random().toString(36).substring(2);
-    const tiktokClientId = clientInformation?.client_id ?? process.env.TIKTOK_CLIENT_ID;
+    const tiktokClientId =
+      clientInformation?.client_id ?? process.env.TIKTOK_CLIENT_ID;
 
     return {
       url:
@@ -317,7 +328,7 @@ export class TiktokProvider extends SocialAbstract implements SocialProvider {
             process?.env?.FRONTEND_URL?.indexOf('https') === -1
               ? 'https://redirectmeto.com/'
               : ''
-          }${process?.env?.FRONTEND_URL}/integrations/social/tiktok`
+          }${process?.env?.FRONTEND_URL}/integrations/social/tiktok`,
         )}` +
         `&state=${state}` +
         `&response_type=code` +
@@ -327,13 +338,18 @@ export class TiktokProvider extends SocialAbstract implements SocialProvider {
     };
   }
 
-  async authenticate(params: {
-    code: string;
-    codeVerifier: string;
-    refresh?: string;
-  }, clientInformation?: ClientInformation) {
-    const tiktokClientId = clientInformation?.client_id ?? process.env.TIKTOK_CLIENT_ID!;
-    const tiktokClientSecret = clientInformation?.client_secret ?? process.env.TIKTOK_CLIENT_SECRET!;
+  async authenticate(
+    params: {
+      code: string;
+      codeVerifier: string;
+      refresh?: string;
+    },
+    clientInformation?: ClientInformation,
+  ) {
+    const tiktokClientId =
+      clientInformation?.client_id ?? process.env.TIKTOK_CLIENT_ID!;
+    const tiktokClientSecret =
+      clientInformation?.client_secret ?? process.env.TIKTOK_CLIENT_SECRET!;
 
     const value = {
       client_key: tiktokClientId,
@@ -372,7 +388,7 @@ export class TiktokProvider extends SocialAbstract implements SocialProvider {
           headers: {
             Authorization: `Bearer ${access_token}`,
           },
-        }
+        },
       )
     ).json();
 
@@ -404,7 +420,7 @@ export class TiktokProvider extends SocialAbstract implements SocialProvider {
       },
       'tiktok-creator-info',
       0,
-      true
+      true,
     );
     const payload = (await response.json()) as {
       data?: {
@@ -427,14 +443,14 @@ export class TiktokProvider extends SocialAbstract implements SocialProvider {
           'tiktok-creator-info',
           serialized,
           '{}',
-          handled.value
+          handled.value,
         );
       }
       throw new BadBody(
         'tiktok-creator-info',
         serialized,
         '{}',
-        handled?.value || payload.error.message || 'TikTok creator info failed'
+        handled?.value || payload.error.message || 'TikTok creator info failed',
       );
     }
     const data = payload.data ?? {};
@@ -462,30 +478,49 @@ export class TiktokProvider extends SocialAbstract implements SocialProvider {
   private async uploadedVideoSuccess(
     id: string,
     publishId: string,
-    accessToken: string
+    accessToken: string,
   ): Promise<{ url: string; id: string }> {
-    // eslint-disable-next-line no-constant-condition
-    while (true) {
-      const post = await (
-        await this.fetch(
-          'https://open.tiktokapis.com/v2/post/publish/status/fetch/',
-          {
-            method: 'POST',
-            headers: {
-              'Content-Type': 'application/json; charset=UTF-8',
-              Authorization: `Bearer ${accessToken}`,
+    for (
+      let attempt = 1;
+      attempt <= TIKTOK_PUBLISH_STATUS_MAX_ATTEMPTS;
+      attempt += 1
+    ) {
+      let post: unknown;
+      try {
+        post = await (
+          await this.fetch(
+            'https://open.tiktokapis.com/v2/post/publish/status/fetch/',
+            {
+              method: 'POST',
+              headers: {
+                'Content-Type': 'application/json; charset=UTF-8',
+                Authorization: `Bearer ${accessToken}`,
+              },
+              body: JSON.stringify({
+                publish_id: publishId,
+              }),
             },
-            body: JSON.stringify({
-              publish_id: publishId,
-            }),
-          },
-          '',
-          0,
-          true
-        )
-      ).json();
+            '',
+            0,
+            true,
+          )
+        ).json();
+      } catch (error) {
+        this.rethrowSanitizedTikTokError(error, 'tiktok-publish-status');
+      }
 
-      const { status, publicaly_available_post_id } = post.data;
+      const payload = this.asTikTokPayload(post);
+      if (payload.error?.code && payload.error.code !== 'ok') {
+        this.throwTikTokPayloadError(
+          'tiktok-publish-status',
+          payload,
+          'TikTok could not read the publication status',
+        );
+      }
+
+      const status = payload.data?.status;
+      const publicaly_available_post_id =
+        payload.data?.publicaly_available_post_id;
 
       if (status === 'SEND_TO_USER_INBOX') {
         return {
@@ -507,22 +542,109 @@ export class TiktokProvider extends SocialAbstract implements SocialProvider {
       }
 
       if (status === 'FAILED') {
-        const handleError = this.handleErrors(JSON.stringify(post));
-        throw new BadBody(
-          'titok-error-upload',
-          JSON.stringify(post),
-          Buffer.from(JSON.stringify(post)),
-          handleError?.value || ''
+        this.throwTikTokPayloadError(
+          'tiktok-publish-status',
+          payload,
+          'TikTok could not publish this media',
         );
       }
 
-      await timer(10000);
+      if (attempt < TIKTOK_PUBLISH_STATUS_MAX_ATTEMPTS) {
+        await timer(TIKTOK_PUBLISH_STATUS_POLL_INTERVAL_MS);
+      }
     }
+
+    throw new BadBody(
+      'tiktok-publish-status',
+      '{}',
+      '{}',
+      'TikTok publication status timed out. Check TikTok before retrying.',
+    );
+  }
+
+  private asTikTokPayload(payload: unknown): {
+    data?: {
+      publish_id?: unknown;
+      status?: string;
+      publicaly_available_post_id?: string[];
+    };
+    error?: { code?: string; message?: string };
+  } {
+    if (!payload || typeof payload !== 'object' || Array.isArray(payload)) {
+      return {};
+    }
+    return payload as {
+      data?: {
+        publish_id?: unknown;
+        status?: string;
+        publicaly_available_post_id?: string[];
+      };
+      error?: { code?: string; message?: string };
+    };
+  }
+
+  private throwTikTokPayloadError(
+    identifier: string,
+    payload: unknown,
+    fallbackMessage: string,
+  ): never {
+    const handled = this.handleErrors(JSON.stringify(payload));
+    const message = handled?.value || fallbackMessage;
+    if (handled?.type === 'refresh-token') {
+      throw new RefreshToken(identifier, '{}', '{}', message);
+    }
+    throw new BadBody(identifier, '{}', '{}', message);
+  }
+
+  private rethrowSanitizedTikTokError(
+    error: unknown,
+    identifier: string,
+  ): never {
+    if (error instanceof RefreshToken) {
+      throw new RefreshToken(
+        identifier,
+        '{}',
+        '{}',
+        error.message || 'TikTok authentication failed',
+      );
+    }
+    if (error instanceof BadBody) {
+      throw new BadBody(
+        identifier,
+        '{}',
+        '{}',
+        error.message || 'TikTok publish request failed',
+      );
+    }
+    throw error;
+  }
+
+  private publishIdFrom(payload: unknown): string {
+    const parsed = this.asTikTokPayload(payload);
+    if (parsed.error?.code && parsed.error.code !== 'ok') {
+      this.throwTikTokPayloadError(
+        'tiktok-publish-init',
+        parsed,
+        'TikTok rejected the publication request',
+      );
+    }
+    if (
+      typeof parsed.data?.publish_id !== 'string' ||
+      !parsed.data.publish_id.trim()
+    ) {
+      throw new BadBody(
+        'tiktok-publish-init',
+        '{}',
+        '{}',
+        'TikTok returned an invalid publication response',
+      );
+    }
+    return parsed.data.publish_id;
   }
 
   private postingMethod(
     method: TikTokDto['content_posting_method'],
-    isPhoto: boolean
+    isPhoto: boolean,
   ): string {
     switch (method) {
       case 'UPLOAD':
@@ -619,41 +741,41 @@ export class TiktokProvider extends SocialAbstract implements SocialProvider {
     id: string,
     accessToken: string,
     postDetails: PostDetails<TikTokDto>[],
-    integration: Integration
+    integration: Integration,
   ): Promise<PostResponse[]> {
     const [firstPost] = postDetails;
     const isPhoto = (firstPost?.media?.[0]?.path?.indexOf('mp4') || -1) === -1;
 
-    console.log({
-      ...this.buildTikokPostInfoBody(firstPost),
-      ...this.buildTikokSourceInfoBody(firstPost),
-    });
-    const {
-      data: { publish_id },
-    } = await (
-      await this.fetch(
-        `https://open.tiktokapis.com/v2/post/publish${this.postingMethod(
-          firstPost.settings.content_posting_method,
-          (firstPost?.media?.[0]?.path?.indexOf('mp4') || -1) === -1
-        )}`,
-        {
-          method: 'POST',
-          headers: {
-            'Content-Type': 'application/json; charset=UTF-8',
-            Authorization: `Bearer ${accessToken}`,
+    let initPayload: unknown;
+    try {
+      initPayload = await (
+        await this.fetch(
+          `https://open.tiktokapis.com/v2/post/publish${this.postingMethod(
+            firstPost.settings.content_posting_method,
+            (firstPost?.media?.[0]?.path?.indexOf('mp4') || -1) === -1,
+          )}`,
+          {
+            method: 'POST',
+            headers: {
+              'Content-Type': 'application/json; charset=UTF-8',
+              Authorization: `Bearer ${accessToken}`,
+            },
+            body: JSON.stringify({
+              ...this.buildTikokPostInfoBody(firstPost),
+              ...this.buildTikokSourceInfoBody(firstPost),
+            }),
           },
-          body: JSON.stringify({
-            ...this.buildTikokPostInfoBody(firstPost),
-            ...this.buildTikokSourceInfoBody(firstPost),
-          }),
-        }
-      )
-    ).json();
+        )
+      ).json();
+    } catch (error) {
+      this.rethrowSanitizedTikTokError(error, 'tiktok-publish-init');
+    }
+    const publish_id = this.publishIdFrom(initPayload);
 
     const { url, id: videoId } = await this.uploadedVideoSuccess(
       integration.profile!,
       publish_id,
-      accessToken
+      accessToken,
     );
 
     return [
@@ -669,7 +791,7 @@ export class TiktokProvider extends SocialAbstract implements SocialProvider {
   async analytics(
     id: string,
     accessToken: string,
-    date: number
+    date: number,
   ): Promise<AnalyticsData[]> {
     const today = dayjs().format('YYYY-MM-DD');
 
@@ -682,7 +804,7 @@ export class TiktokProvider extends SocialAbstract implements SocialProvider {
           headers: {
             Authorization: `Bearer ${accessToken}`,
           },
-        }
+        },
       );
 
       const userStatsData = await userStatsResponse.json();
@@ -734,7 +856,7 @@ export class TiktokProvider extends SocialAbstract implements SocialProvider {
             Authorization: `Bearer ${accessToken}`,
           },
           body: JSON.stringify({ max_count: 20 }),
-        }
+        },
       );
 
       const videoListData = await videoListResponse.json();
@@ -755,7 +877,7 @@ export class TiktokProvider extends SocialAbstract implements SocialProvider {
             body: JSON.stringify({
               filters: { video_ids: videoIds },
             }),
-          }
+          },
         );
 
         const videoQueryData = await videoQueryResponse.json();
@@ -809,7 +931,7 @@ export class TiktokProvider extends SocialAbstract implements SocialProvider {
 
   async missing(
     id: string,
-    accessToken: string
+    accessToken: string,
   ): Promise<{ id: string; url: string }[]> {
     try {
       const videoListResponse = await this.fetch(
@@ -821,7 +943,7 @@ export class TiktokProvider extends SocialAbstract implements SocialProvider {
             Authorization: `Bearer ${accessToken}`,
           },
           body: JSON.stringify({ max_count: 20 }),
-        }
+        },
       );
 
       const videoListData = await videoListResponse.json();
@@ -845,7 +967,7 @@ export class TiktokProvider extends SocialAbstract implements SocialProvider {
     integrationId: string,
     accessToken: string,
     postId: string,
-    fromDate: number
+    fromDate: number,
   ): Promise<AnalyticsData[]> {
     const today = dayjs().format('YYYY-MM-DD');
 
@@ -865,7 +987,7 @@ export class TiktokProvider extends SocialAbstract implements SocialProvider {
           },
           '',
           0,
-          true
+          true,
         )
       ).json();
 
@@ -891,7 +1013,7 @@ export class TiktokProvider extends SocialAbstract implements SocialProvider {
               video_ids: [postId],
             },
           }),
-        }
+        },
       );
 
       const data = await response.json();
