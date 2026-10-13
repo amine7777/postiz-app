@@ -191,6 +191,32 @@ describe('TiktokProvider publishing', () => {
     ]);
   });
 
+  it('falls back to the publish id and profile URL when TikTok returns no usable public post id', async () => {
+    const provider = new TiktokProvider();
+    jest
+      .spyOn(provider, 'fetch')
+      .mockResolvedValueOnce(response({ data: { publish_id: 'publish-1' } }))
+      .mockResolvedValueOnce(
+        response({
+          data: {
+            status: 'PUBLISH_COMPLETE',
+            publicaly_available_post_id: [],
+          },
+        }),
+      );
+
+    await expect(
+      provider.post('creator-id', 'secret-token', postDetails, integration),
+    ).resolves.toEqual([
+      {
+        id: 'post-1',
+        releaseURL: 'https://www.tiktok.com/@creator-name',
+        postId: 'publish-1',
+        status: 'success',
+      },
+    ]);
+  });
+
   it('returns a sanitized failure when TikTok marks the publication FAILED', async () => {
     const provider = new TiktokProvider();
     jest

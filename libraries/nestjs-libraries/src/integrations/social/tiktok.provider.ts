@@ -519,8 +519,7 @@ export class TiktokProvider extends SocialAbstract implements SocialProvider {
       }
 
       const status = payload.data?.status;
-      const publicaly_available_post_id =
-        payload.data?.publicaly_available_post_id;
+      const publicPostId = this.publicPostIdFrom(payload);
 
       if (status === 'SEND_TO_USER_INBOX') {
         return {
@@ -531,13 +530,10 @@ export class TiktokProvider extends SocialAbstract implements SocialProvider {
 
       if (status === 'PUBLISH_COMPLETE') {
         return {
-          url: !publicaly_available_post_id
+          url: !publicPostId
             ? `https://www.tiktok.com/@${id}`
-            : `https://www.tiktok.com/@${id}/video/` +
-              publicaly_available_post_id,
-          id: !publicaly_available_post_id
-            ? publishId
-            : publicaly_available_post_id?.[0],
+            : `https://www.tiktok.com/@${id}/video/${publicPostId}`,
+          id: publicPostId || publishId,
         };
       }
 
@@ -566,7 +562,7 @@ export class TiktokProvider extends SocialAbstract implements SocialProvider {
     data?: {
       publish_id?: unknown;
       status?: string;
-      publicaly_available_post_id?: string[];
+      publicaly_available_post_id?: unknown;
     };
     error?: { code?: string; message?: string };
   } {
@@ -577,10 +573,22 @@ export class TiktokProvider extends SocialAbstract implements SocialProvider {
       data?: {
         publish_id?: unknown;
         status?: string;
-        publicaly_available_post_id?: string[];
+        publicaly_available_post_id?: unknown;
       };
       error?: { code?: string; message?: string };
     };
+  }
+
+  private publicPostIdFrom(payload: {
+    data?: { publicaly_available_post_id?: unknown };
+  }): string | undefined {
+    const ids = payload.data?.publicaly_available_post_id;
+    if (!Array.isArray(ids)) return undefined;
+    const id = ids.find(
+      (candidate): candidate is string =>
+        typeof candidate === 'string' && candidate.trim().length > 0,
+    );
+    return id?.trim();
   }
 
   private throwTikTokPayloadError(
