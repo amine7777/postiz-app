@@ -144,8 +144,8 @@ export class IntegrationService {
     return this._integrationRepository.updateOnCustomerName(org, id, name);
   }
 
-  getIntegrationsList(org: string) {
-    return this._integrationRepository.getIntegrationsList(org);
+  getIntegrationsList(org: string, includePending = false) {
+    return this._integrationRepository.getIntegrationsList(org, includePending);
   }
 
   getIntegrationForOrder(id: string, order: string, user: string, org: string) {
@@ -286,7 +286,7 @@ export class IntegrationService {
       org,
       id
     );
-    if (!getIntegration) {
+    if (!getIntegration || getIntegration.deletedAt) {
       throw new HttpException('Integration not found', HttpStatus.NOT_FOUND);
     }
     if (!getIntegration.inBetweenSteps) {
@@ -309,11 +309,17 @@ export class IntegrationService {
       data
     );
 
-    await this.checkForDeletedOnceAndUpdate(
-      org,
-      String(getIntegrationInformation.id)
-    );
-    await this._integrationRepository.updateIntegration(id, {
+    if (
+      !getIntegrationInformation.id ||
+      !getIntegrationInformation.name ||
+      !getIntegrationInformation.access_token
+    ) {
+      throw new HttpException(
+        'Could not load the selected page',
+        HttpStatus.BAD_REQUEST
+      );
+    }
+    const saved = await this._integrationRepository.updateIntegration(id, {
       picture: getIntegrationInformation.picture,
       internalId: String(getIntegrationInformation.id),
       organizationId: org,
@@ -321,9 +327,16 @@ export class IntegrationService {
       inBetweenSteps: false,
       token: getIntegrationInformation.access_token,
       profile: getIntegrationInformation.username,
-    });
+      refreshToken: getIntegration.refreshToken,
+      tokenExpiration: getIntegration.tokenExpiration,
+      rootInternalId: getIntegration.rootInternalId || getIntegration.internalId,
+      customInstanceDetails: getIntegration.customInstanceDetails,
+    }, !!provider.oneTimeToken);
 
-    return { success: true };
+    this._refreshIntegrationService
+      .startRefreshWorkflow(org, saved.id, provider)
+      .catch(() => console.warn('Could not start channel refresh workflow'));
+    return { success: true, id: saved.id };
   }
 
   async checkAnalytics(

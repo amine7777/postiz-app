@@ -1,11 +1,13 @@
 // Focused callback regression tests; independent of the legacy Nx Jest preset.
 module.exports = {
-  testEnvironment: 'jsdom',
+  testEnvironment: '<rootDir>/test/connection-jsdom-environment.cjs',
   testMatch: [
     '<rootDir>/apps/frontend/src/components/launches/continue.integration.spec.tsx',
     '<rootDir>/libraries/nestjs-libraries/src/database/prisma/integrations/integration.repository.spec.ts',
+    '<rootDir>/libraries/nestjs-libraries/src/database/prisma/integrations/integration.connection.integration.spec.ts',
   ],
   moduleNameMapper: {
+    '^@gitroom/backend/(.*)$': '<rootDir>/apps/backend/src/$1',
     '^@gitroom/nestjs-libraries/(.*)$':
       '<rootDir>/libraries/nestjs-libraries/src/$1',
     '^@gitroom/frontend/(.*)$': '<rootDir>/apps/frontend/src/$1',
@@ -23,6 +25,8 @@ module.exports = {
           jsx: 'react-jsx',
           esModuleInterop: true,
           isolatedModules: true,
+          experimentalDecorators: true,
+          emitDecoratorMetadata: true,
         },
       },
     ],

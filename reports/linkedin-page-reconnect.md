@@ -1,54 +1,71 @@
-# LinkedIn Page connection regression
+# Safe OAuth page connections
 
-Base: `v1.0.0-mt14`. Branch: `fix/linkedin-page-reconnect`.
+Target: `sype/postiz-app`, `main`. Branch: `fix/linkedin-page-reconnect`.
 
-The OAuth callback creates the pending integration using the organization stored
-in Redis under the OAuth state. Previously, page selection switched to the
-session-authenticated endpoint whenever any Postiz auth cookie was present. A
-browser logged into another organization therefore received `404 Integration not
-found` on Save. Production ingress recorded three 404 responses for the affected
-Save requests after a successful 201 callback.
+## Problem and behavior
 
-The callback now uses the existing state-backed public save endpoint regardless
-of the browser session. This endpoint resolves the organization from Redis and
-the service checks that the integration belongs to that organization. The
-browser does not choose an organization ID or receive stored provider tokens.
+The OAuth callback resolves the organization from its Redis state. Page selection
+previously switched to the browser's authenticated Postiz organization whenever
+an auth cookie existed. A different browser organization caused Save to return
+404, while the selector hid the error. Save now retains the OAuth state identity,
+shows errors with retry, and preserves existing branded return URL parameters.
 
-Save failures now appear alongside the selection and can be retried. Network
-failures release the Save button. Return URLs retain their existing query
-parameters instead of appending a second question mark.
+The provider's first administered page is no longer used as an integration key
+before selection. Each two-step connection gets an isolated
+`pending:<provider>:<UUID>` identity. Finalization runs in a serializable
+transaction: update the selected existing page (retaining its ID and post
+relationships) or finalize the isolated draft as a new page. Only the draft is
+retired, and publication rows are never modified. Unsafe old callbacks that
+would transform a real page A into another page B are rejected with a reconnect
+instruction. A same-page legacy reconnect remains supported.
 
-The persistence review also found that selecting the same integration marked its
-posts deleted before restoring the integration. The duplicate cleanup now runs
-only when the existing integration has a different ID, preserving posts on a
-same-page reconnect.
+Fresh token, refresh token, expiration, root identity and custom configuration
+follow the selected page. Token propagation is scoped to its organization and
+provider, and refresh workflows start on the final integration ID. Callback
+responses contain selection metadata rather than stored credentials.
 
-## Validation
+Drafts are excluded by default from public lists, quota counts, automation lists
+and downgrade operations. The native configuration list opts in to incomplete
+connections for resumption.
+
+`isomorphic-dompurify` remains external to the frontend server bundle so jsdom
+can resolve its filesystem stylesheet asset during prerendering. The test DOM
+environment treats optional native canvas as absent; no production resolver is
+modified.
+
+## Verification
 
 ```sh
 pnpm exec jest --config jest.social-connect.config.cjs --runInBand
+pnpm exec tsc --project apps/backend/tsconfig.build.json --noEmit --incremental false
 pnpm exec tsc --project apps/frontend/tsconfig.json --noEmit --incremental false
 ```
 
-- 10 regression tests pass, covering logged-in/logged-out callbacks, Save errors,
-  retry, network errors, redirect parameters, single-step callbacks, and page
-  persistence.
-- Three selected regression cases fail on the original source and pass with the
-  correction (session identity, malformed redirect, same-page post preservation).
-- Frontend TypeScript check passes after local Prisma client generation.
-- Production webpack compilation and its TypeScript phase succeed. The complete
-  Next.js build fails later while collecting `/p/[id]` page data because bundled
-  jsdom cannot find `browser/default-stylesheet.css`. That preview route and
-  dependency are outside this patch; the full build is not validated.
-- No production mutations, database migration, commit, push, or deployment.
+- 25 tests pass, including 11 against a disposable local PostgreSQL instance.
+  Coverage includes A -> new/existing B, reconnect A, complete publication-row
+  preservation, intertenant rejection, separate LinkedIn application credentials,
+  token propagation, legacy safety, concurrency, transaction rollback and
+  completed-channel lists before and after selection.
+- The DB suite requires `POSTIZ_CONNECT_TEST_DATABASE_URL` pointing explicitly
+  to `127.0.0.1/postiz_connect_test`; other hosts/databases are refused. Without
+  this variable, the database suite is skipped. The CI workflow provides a
+  disposable PostgreSQL 16 service and runs all suites.
+- Backend production TypeScript check passes. The complete frontend production
+  webpack build passes, including TypeScript, page collection and trace generation.
+- Independent review cleared the historical publication-loss P1 and the pending
+  channel/quota P2, with no remaining P0-P2 finding.
+- No schema migration or production data/configuration mutation.
 
-## Release checks and recovery
+## Release and recovery
 
-Build an immutable Postiz image from the reviewed patch. Deployment requires user
-approval. Verify through Plumeza with a browser already logged into a different
-Postiz organization: select a LinkedIn Page, Save, confirm the branded return and
-the channel imported under the intended customer. Also verify reconnecting an
-existing page retains its integration ID and publication history. Use a fresh
-OAuth flow if its state has expired.
+After merging, build an immutable Postiz image from the reviewed source.
+Deployment still requires approval for the named production target. Verify from
+Plumeza using a browser already signed into a different Postiz organization:
+select a LinkedIn Page, Save, confirm the branded return and import under the
+intended customer. Reconnect an existing page and verify its ID and publication
+history. Abandon a callback and confirm it does not appear as a connected channel.
+Start a fresh OAuth flow if the old state expires.
 
-Rollback is the previous immutable Postiz image; there are no schema changes.
+Rollback is the previous immutable Postiz image; no schema rollback is needed.
+Draft rows may remain hidden in the database. No production repair or automatic
+cleanup of older incomplete integrations is included.

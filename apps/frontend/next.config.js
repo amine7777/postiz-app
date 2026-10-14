@@ -22,6 +22,8 @@ const nextConfig = {
   },
   reactStrictMode: false,
   transpilePackages: ['crypto-hash'],
+  // Keep jsdom's filesystem assets available to server-side sanitization.
+  serverExternalPackages: ['isomorphic-dompurify'],
   // Enable production sourcemaps for Sentry
   productionBrowserSourceMaps: true,
 
