@@ -254,11 +254,11 @@ export class NoAuthIntegrationsController {
           : undefined
       );
 
-    this._refreshIntegrationService
-      .startRefreshWorkflow(org.id, createUpdate.id, integrationProvider)
-      .catch((err) => {
-        console.log(err);
-      });
+    if (!createUpdate.inBetweenSteps) {
+      this._refreshIntegrationService
+        .startRefreshWorkflow(org.id, createUpdate.id, integrationProvider)
+        .catch(() => console.warn('Could not start channel refresh workflow'));
+    }
 
     // Fetch pages if this is a two-step provider and not a refresh
     let pages: any[] = [];
@@ -317,7 +317,8 @@ export class NoAuthIntegrationsController {
       : undefined;
 
     return {
-      ...createUpdate,
+      id: createUpdate.id,
+      inBetweenSteps: createUpdate.inBetweenSteps,
       onboarding: onboarding === 'true',
       pages,
       ...(returnURL ? { returnURL } : {}),

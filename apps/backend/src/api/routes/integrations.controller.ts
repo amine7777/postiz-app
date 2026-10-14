@@ -90,7 +90,7 @@ export class IntegrationsController {
     return {
       integrations: await Promise.all(
         (
-          await this._integrationService.getIntegrationsList(org.id)
+          await this._integrationService.getIntegrationsList(org.id, true)
         ).map(async (p) => {
           const findIntegration = this._integrationManager.getSocialIntegration(
             p.providerIdentifier

@@ -1,7 +1,11 @@
-import { PrismaRepository } from '@gitroom/nestjs-libraries/database/prisma/prisma.service';
-import { Injectable } from '@nestjs/common';
+import {
+  PrismaRepository,
+  PrismaTransaction,
+} from '@gitroom/nestjs-libraries/database/prisma/prisma.service';
+import { HttpException, HttpStatus, Injectable } from '@nestjs/common';
+import { randomUUID } from 'crypto';
 import dayjs from 'dayjs';
-import { Integration } from '@prisma/client';
+import { Integration, Prisma } from '@prisma/client';
 import { makeId } from '@gitroom/nestjs-libraries/services/make.is';
 import { IntegrationTimeDto } from '@gitroom/nestjs-libraries/dtos/integrations/integration.time.dto';
 import { UploadFactory } from '@gitroom/nestjs-libraries/upload/upload.factory';
@@ -16,7 +20,8 @@ export class IntegrationRepository {
     private _plugs: PrismaRepository<'plugs'>,
     private _exisingPlugData: PrismaRepository<'exisingPlugData'>,
     private _customers: PrismaRepository<'customer'>,
-    private _mentions: PrismaRepository<'mentions'>
+    private _mentions: PrismaRepository<'mentions'>,
+    private _transaction: PrismaTransaction
   ) {}
 
   getMentions(platform: string, q: string) {
@@ -142,7 +147,14 @@ export class IntegrationRepository {
     });
   }
 
-  async updateIntegration(id: string, params: Partial<Integration>) {
+  async updateIntegration(
+    id: string,
+    params: Partial<Integration>,
+    oneTimeToken = false
+  ) {
+    if (!params.organizationId || !params.internalId) {
+      throw new HttpException('Invalid page selection', HttpStatus.BAD_REQUEST);
+    }
     if (
       params.picture &&
       (params.picture.indexOf(process.env.CLOUDFLARE_BUCKET_URL!) === -1 ||
@@ -151,46 +163,97 @@ export class IntegrationRepository {
       params.picture = await this.storage.uploadSimple(params.picture);
     }
 
-    const existing = await this._integration.model.integration.findUnique({
-      where: {
-        organizationId_internalId: {
-          organizationId: params.organizationId!,
-          internalId: params.internalId,
-        },
-      },
-    });
+    return this._transaction.model.$transaction(
+      async (tx) => {
+        const source = await tx.integration.findFirst({
+          where: { id, organizationId: params.organizationId, deletedAt: null },
+        });
+        if (!source) {
+          throw new HttpException(
+            'Integration not found',
+            HttpStatus.NOT_FOUND
+          );
+        }
+        if (!source.inBetweenSteps) {
+          throw new HttpException('Invalid request', HttpStatus.BAD_REQUEST);
+        }
+        // Old callbacks may point to a real, previously connected page. Never
+        // rename that integration to another page or remove its publications.
+        if (
+          !source.internalId.startsWith('pending:') &&
+          source.internalId !== params.internalId
+        ) {
+          throw new HttpException(
+            'Please restart the channel connection',
+            HttpStatus.CONFLICT
+          );
+        }
 
-    if (existing) {
-      await this._posts.model.post.updateMany({
-        where: {
-          integrationId: id,
-        },
-        data: {
-          deletedAt: new Date(),
-        },
-      });
+        const existing = await tx.integration.findUnique({
+          where: {
+            organizationId_internalId: {
+              organizationId: params.organizationId!,
+              internalId: params.internalId!,
+            },
+          },
+        });
+        if (
+          existing &&
+          existing.providerIdentifier !== source.providerIdentifier
+        ) {
+          throw new HttpException(
+            'Page belongs to another provider',
+            HttpStatus.CONFLICT
+          );
+        }
 
-      await this._integration.model.integration.update({
-        where: {
-          id,
-        },
-        data: {
-          internalId: `deleted_${params.internalId}_${makeId(10)}`,
-          deletedAt: new Date(),
-        },
-      });
-    }
-
-    return this._integration.model.integration.update({
-      where: {
-        ...(existing ? { id: existing.id } : { id }),
+        const saved = await tx.integration.update({
+          where: {
+            id: existing?.id || id,
+            organizationId: params.organizationId,
+          },
+          data: {
+            ...params,
+            disabled: false,
+            deletedAt: null,
+            refreshNeeded: false,
+          },
+        });
+        if (existing && existing.id !== id) {
+          // Retire only the isolated OAuth draft. Existing page IDs and all
+          // publication relationships are left intact.
+          await tx.integration.update({
+            where: { id, organizationId: params.organizationId },
+            data: {
+              deletedAt: new Date(),
+              token: '',
+              refreshToken: null,
+              tokenExpiration: null,
+            },
+          });
+        }
+        if (oneTimeToken) {
+          await tx.integration.updateMany({
+            where: {
+              organizationId: saved.organizationId,
+              providerIdentifier: saved.providerIdentifier,
+              rootInternalId: saved.rootInternalId,
+              id: { not: saved.id },
+              inBetweenSteps: false,
+              deletedAt: null,
+            },
+            data: {
+              token: saved.token,
+              refreshToken: saved.refreshToken,
+              tokenExpiration: saved.tokenExpiration,
+              refreshNeeded: false,
+            },
+          });
+        }
+        return saved;
       },
-      data: {
-        ...params,
-        disabled: false,
-        deletedAt: null,
-      },
-    });
+      { isolationLevel: Prisma.TransactionIsolationLevel.Serializable }
+    );
   }
 
   disconnectChannel(org: string, id: string) {
@@ -231,6 +294,11 @@ export class IntegrationRepository {
     timezone?: number,
     customInstanceDetails?: string
   ) {
+    // A page picker must never upsert a real page until the user selects it.
+    const connectionId =
+      isBetweenSteps && !refresh
+        ? `pending:${provider}:${randomUUID()}`
+        : internalId;
     const postTimes = timezone
       ? {
           postingTimes: JSON.stringify([
@@ -243,7 +311,7 @@ export class IntegrationRepository {
     const upsert = await this._integration.model.integration.upsert({
       where: {
         organizationId_internalId: {
-          internalId,
+          internalId: connectionId,
           organizationId: org,
         },
       },
@@ -259,7 +327,7 @@ export class IntegrationRepository {
         ...(expiresIn
           ? { tokenExpiration: new Date(Date.now() + expiresIn * 1000) }
           : {}),
-        internalId,
+        internalId: connectionId,
         ...postTimes,
         organizationId: org,
         refreshNeeded: false,
@@ -288,14 +356,14 @@ export class IntegrationRepository {
         ...(expiresIn
           ? { tokenExpiration: new Date(Date.now() + expiresIn * 1000) }
           : {}),
-        internalId,
+        internalId: connectionId,
         organizationId: org,
         deletedAt: null,
         refreshNeeded: false,
       },
     });
 
-    if (oneTimeToken) {
+    if (oneTimeToken && !isBetweenSteps) {
       const rootId =
         (
           await this._integration.model.integration.findFirst({
@@ -312,6 +380,10 @@ export class IntegrationRepository {
             not: upsert.id,
           },
           rootInternalId: rootId,
+          organizationId: org,
+          providerIdentifier: provider,
+          inBetweenSteps: false,
+          deletedAt: null,
         },
         data: {
           token,
@@ -483,11 +555,12 @@ export class IntegrationRepository {
     });
   }
 
-  getIntegrationsList(org: string) {
+  getIntegrationsList(org: string, includePending = false) {
     return this._integration.model.integration.findMany({
       where: {
         organizationId: org,
         deletedAt: null,
+        ...(includePending ? {} : { inBetweenSteps: false }),
       },
       include: {
         customer: true,
@@ -563,6 +636,7 @@ export class IntegrationRepository {
         organizationId: org,
         disabled: false,
         deletedAt: null,
+        inBetweenSteps: false,
       },
       take: totalChannels,
       select: {

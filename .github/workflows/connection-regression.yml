@@ -1,0 +1,41 @@
+name: Connection regressions
+
+on:
+  pull_request:
+    paths:
+      - 'apps/backend/src/api/routes/**'
+      - 'apps/frontend/src/components/launches/**'
+      - 'libraries/nestjs-libraries/src/database/prisma/**'
+      - 'jest.social-connect.config.cjs'
+      - 'test/connection-jsdom-environment.cjs'
+      - '.github/workflows/connection-regression.yml'
+
+jobs:
+  connections:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: postiz_connect_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres -d postiz_connect_test"
+          --health-interval 5s --health-timeout 5s --health-retries 10
+    env:
+      DATABASE_URL: postgresql://postgres:postgres@127.0.0.1:5432/postiz_connect_test
+      POSTIZ_CONNECT_TEST_DATABASE_URL: postgresql://postgres:postgres@127.0.0.1:5432/postiz_connect_test
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22.16.0'
+      - uses: pnpm/action-setup@v4
+        with:
+          version: '10.6.1'
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm exec prisma db push --schema libraries/nestjs-libraries/src/database/prisma/schema.prisma --skip-generate
+      - run: pnpm exec jest --config jest.social-connect.config.cjs --runInBand
