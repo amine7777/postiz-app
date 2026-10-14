@@ -45,7 +45,11 @@ export const ContinueIntegration: FC<{
       if (returnURL) {
         // If returnURL exists, always redirect to it with the path params
         const params = path.includes('?') ? path.split('?')[1] : '';
-        push(params ? `${returnURL}?${params}` : returnURL);
+        const destination = new URL(returnURL, window.location.origin);
+        new URLSearchParams(params).forEach((value, key) => {
+          destination.searchParams.set(key, value);
+        });
+        push(destination.toString());
       } else if (logged) {
         // If logged in without returnURL, use normal navigation
         push(path);
@@ -199,7 +203,10 @@ export const ContinueIntegration: FC<{
         returnURL,
         'Channel Updated'
       );
-    })();
+    })().catch(() => {
+      setErrorMessage('Could not connect channel. Please try again.');
+      setError(true);
+    });
   }, []);
 
   const onSave = useCallback(
@@ -207,12 +214,14 @@ export const ContinueIntegration: FC<{
       if (!twoStepState) return;
 
       setIsSaving(true);
+      setError(false);
+      setErrorMessage(null);
 
       try {
-        // Use public or authenticated endpoint based on the flow
-        const endpoint = logged
-          ? `/integrations/provider/${twoStepState.integrationId}/connect`
-          : `/integrations/public/provider/${twoStepState.integrationId}/connect`;
+        // social-connect resolves the organization from the OAuth state. Keep
+        // that identity for page selection, even when a different Postiz
+        // organization is logged in in this browser.
+        const endpoint = `/integrations/public/provider/${twoStepState.integrationId}/connect`;
 
         const response = await fetch(endpoint, {
           method: 'POST',
@@ -242,6 +251,9 @@ export const ContinueIntegration: FC<{
           saveData?.returnURL || twoStepState.returnURL,
           'Channel Added'
         );
+      } catch {
+        setErrorMessage('Could not save channel configuration. Please try again.');
+        setError(true);
       } finally {
         setIsSaving(false);
       }
@@ -330,6 +342,12 @@ export const ContinueIntegration: FC<{
                 )}
               </p>
             </div>
+
+            {error && (
+              <p role="alert" className="text-red-400">
+                {errorMessage || 'Failed to save channel configuration'}
+              </p>
+            )}
 
             <IntegrationContext.Provider
               value={{

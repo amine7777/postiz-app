@@ -160,7 +160,9 @@ export class IntegrationRepository {
       },
     });
 
-    if (existing) {
+    // Selecting the same page is a reconnect, not a duplicate integration.
+    // Keep its publications and identity intact.
+    if (existing && existing.id !== id) {
       await this._posts.model.post.updateMany({
         where: {
           integrationId: id,
