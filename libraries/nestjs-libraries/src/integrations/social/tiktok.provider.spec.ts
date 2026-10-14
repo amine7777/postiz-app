@@ -224,9 +224,12 @@ describe('TiktokProvider publishing', () => {
       .mockResolvedValueOnce(response({ data: { publish_id: 'publish-1' } }))
       .mockResolvedValueOnce(
         response({
-          data: { status: 'FAILED' },
+          data: {
+            status: 'FAILED',
+            fail_reason: 'video_pull_failed',
+          },
           error: {
-            code: 'video_pull_failed',
+            code: 'ok',
             message: 'private upstream data',
           },
         }),
