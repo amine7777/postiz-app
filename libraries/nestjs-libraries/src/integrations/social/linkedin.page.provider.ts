@@ -170,12 +170,12 @@ export class LinkedinPageProvider
     }
 
     const pageIds = Array.from(
-      new Set(
-        (data.elements || [])
-          .map((entry: any) => entry.organizationTarget || entry.organization)
-          .filter((urn: unknown): urn is string => typeof urn === 'string')
-          .map((urn: string) => urn.split(':').pop())
-          .filter((id: unknown): id is string => !!id)
+      new Set<string>(
+        (data.elements || []).flatMap((entry: any) => {
+          const urn = entry.organizationTarget || entry.organization;
+          const id = typeof urn === 'string' ? urn.split(':').pop() : undefined;
+          return id ? [id] : [];
+        })
       )
     );
 
