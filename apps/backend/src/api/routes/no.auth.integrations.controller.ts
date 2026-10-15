@@ -127,7 +127,7 @@ export class NoAuthIntegrationsController {
       username,
       additionalSettings,
       // eslint-disable-next-line no-async-promise-executor
-    } = await new Promise<AuthTokenDetails>(async (res) => {
+    } = await new Promise<AuthTokenDetails>(async (res, reject) => {
       try {
         const auth = await integrationProvider.authenticate(
           {
@@ -160,15 +160,7 @@ export class NoAuthIntegrationsController {
             );
             return res({ ...newAuth, refreshToken: body.refresh });
           } catch (err: any) {
-            return res({
-              error: err.message,
-              accessToken: '',
-              id: '',
-              name: '',
-              picture: '',
-              username: '',
-              additionalSettings: [],
-            });
+            return reject(err);
           }
         }
 
@@ -186,15 +178,7 @@ export class NoAuthIntegrationsController {
           });
         }
 
-        return res({
-          error: 'Authentication failed',
-          accessToken: '',
-          id: '',
-          name: '',
-          picture: '',
-          username: '',
-          additionalSettings: [],
-        });
+        return reject(err);
       }
     });
 

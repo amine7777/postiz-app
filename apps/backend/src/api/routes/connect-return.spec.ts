@@ -142,6 +142,10 @@ describe('external OAuth contract',()=>{
   try{await (f.controller as any).connectOutcome('state','linkedin-page',undefined,async()=>{throw new Error('access_token=secret');});throw Error('expected rejection');}
   catch(error:any){expect(error.getResponse()).toMatchObject({code:'SESSION_EXPIRED',requestId:expect.any(String)});expect(JSON.stringify(error.getResponse())).not.toContain('secret');}
  });
+ it('does not report a provider transport failure as a permission rejection',async()=>{
+  const f=fixture();f.store.set('connect-context:state',JSON.stringify({orgId:'org-a',linkId:'link-a',provider:'linkedin-page',returnURL:'https://app.plumeza.io/connect/token'}));f.store.set('organization:state','org-a');
+  await expect((f.controller as any).connectOutcome('state','linkedin-page',undefined,async()=>{throw new Error('LinkedIn token exchange failed');})).rejects.toMatchObject({response:{code:'CONNECTION_FAILED'}});
+ });
  it('preserves explicit native success and never creates a branded receipt for it',async()=>{
   const f=fixture();expect(await (f.controller as any).connectOutcome('native-state','linkedin-page',undefined,async()=>({id:'native-id'}))).toEqual({id:'native-id',flow:'native'});
  });
