@@ -49,7 +49,7 @@ describe('LinkedinPageProvider authentication', () => {
     expect(fetchMock.mock.calls[1][0]).toBe(
       'https://api.linkedin.com/rest/organizationAcls?q=roleAssignee&role=ADMINISTRATOR&state=APPROVED'
     );
-    expect(fetchMock.mock.calls[2][0]).toContain(
+    expect(fetchMock.mock.calls[2][0]).toBe(
       'https://api.linkedin.com/rest/organizations/123'
     );
   });

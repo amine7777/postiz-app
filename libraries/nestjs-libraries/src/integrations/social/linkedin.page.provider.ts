@@ -290,7 +290,7 @@ export class LinkedinPageProvider
     const data = await this.linkedinJson(
       `https://api.linkedin.com/rest/organizations/${encodeURIComponent(
         pageId
-      )}?projection=(id,localizedName,vanityName,logoV2(original~:playableStreams))`,
+      )}`,
       { headers: this.linkedinHeaders(accessToken) },
       'organization_details',
       true
