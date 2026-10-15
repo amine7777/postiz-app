@@ -41,6 +41,9 @@ jest.mock('@gitroom/nestjs-libraries/redis/redis.service', () => ({
 jest.mock('@gitroom/nestjs-libraries/integrations/social.abstract', () => ({
   RefreshToken: class {},
   NotEnoughScopes: class {},
+  ProviderConnectionError: class ProviderConnectionError extends Error {
+    constructor(public stage: string, public status?: number) { super('Social provider connection failed'); }
+  },
 }));
 jest.mock(
   '@gitroom/nestjs-libraries/database/prisma/organizations/organization.service',

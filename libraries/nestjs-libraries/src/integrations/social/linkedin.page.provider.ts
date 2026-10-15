@@ -12,7 +12,10 @@ import { Integration } from '@prisma/client';
 import { Plug } from '@gitroom/helpers/decorators/plug.decorator';
 import { timer } from '@gitroom/helpers/utils/timer';
 import { Rules } from '@gitroom/nestjs-libraries/chat/rules.description.decorator';
-import { NotEnoughScopes } from '@gitroom/nestjs-libraries/integrations/social.abstract';
+import {
+  NotEnoughScopes,
+  ProviderConnectionError,
+} from '@gitroom/nestjs-libraries/integrations/social.abstract';
 
 const LINKEDIN_API_VERSION = '202601';
 
@@ -66,6 +69,62 @@ export class LinkedinPageProvider
     };
   }
 
+  private async linkedinJson(
+    url: string,
+    options: RequestInit,
+    stage: string,
+    retryTransient = false,
+    attempt = 0
+  ): Promise<any> {
+    let response: Response;
+    try {
+      response = await fetch(url, options);
+    } catch {
+      if (retryTransient && attempt < 2) {
+        await timer(250 * 2 ** attempt);
+        return this.linkedinJson(
+          url,
+          options,
+          stage,
+          retryTransient,
+          attempt + 1
+        );
+      }
+      throw new ProviderConnectionError(stage);
+    }
+
+    if (
+      retryTransient &&
+      attempt < 2 &&
+      (response.status === 429 || response.status >= 500)
+    ) {
+      try {
+        await response.body?.cancel();
+      } catch {
+        // Discarding a provider error body is best-effort; never log its contents.
+      }
+      await timer(250 * 2 ** attempt);
+      return this.linkedinJson(
+        url,
+        options,
+        stage,
+        retryTransient,
+        attempt + 1
+      );
+    }
+
+    let data: any;
+    try {
+      data = await response.json();
+    } catch {
+      throw new ProviderConnectionError(stage, response.status);
+    }
+    if (!response.ok) {
+      throw new ProviderConnectionError(stage, response.status);
+    }
+    return data;
+  }
+
   // Identity for the page app without openid/profile: use the admin org list.
   private async firstAdminOrg(accessToken: string) {
     const orgs = await this.companies(accessToken);
@@ -75,7 +134,7 @@ export class LinkedinPageProvider
   override async refreshToken(
     refresh_token: string
   ): Promise<AuthTokenDetails> {
-    const response = await fetch(
+    const token = await this.linkedinJson(
       'https://www.linkedin.com/oauth/v2/accessToken',
       {
         method: 'POST',
@@ -88,11 +147,11 @@ export class LinkedinPageProvider
           client_id: this.pageClientId,
           client_secret: this.pageClientSecret,
         }),
-      }
+      },
+      'token_refresh'
     );
-    const token = await response.json();
-    if (!response.ok || !token.access_token) {
-      throw new Error('LinkedIn token refresh failed');
+    if (!token.access_token) {
+      throw new ProviderConnectionError('token_refresh', 200);
     }
     const {
       access_token: accessToken,
@@ -160,14 +219,12 @@ export class LinkedinPageProvider
   }
 
   async companies(accessToken: string) {
-    const response = await fetch(
+    const data = await this.linkedinJson(
       'https://api.linkedin.com/rest/organizationAcls?q=roleAssignee&role=ADMINISTRATOR&state=APPROVED',
-      { headers: this.linkedinHeaders(accessToken) }
+      { headers: this.linkedinHeaders(accessToken) },
+      'organization_acl',
+      true
     );
-    const data = await response.json();
-    if (!response.ok) {
-      throw new Error('LinkedIn organization lookup failed');
-    }
 
     const pageIds = Array.from(
       new Set<string>(
@@ -199,7 +256,12 @@ export class LinkedinPageProvider
     );
 
     if (pageIds.length && !availablePages.length) {
-      throw new Error('LinkedIn organization details lookup failed');
+      const rejected = pages.find(
+        (page): page is PromiseRejectedResult => page.status === 'rejected'
+      );
+      throw rejected?.reason instanceof ProviderConnectionError
+        ? rejected.reason
+        : new ProviderConnectionError('organization_details');
     }
 
     return availablePages;
@@ -225,15 +287,16 @@ export class LinkedinPageProvider
 
   async fetchPageInformation(accessToken: string, params: { page: string }) {
     const pageId = params.page;
-    const response = await fetch(
+    const data = await this.linkedinJson(
       `https://api.linkedin.com/rest/organizations/${encodeURIComponent(
         pageId
       )}?projection=(id,localizedName,vanityName,logoV2(original~:playableStreams))`,
-      { headers: this.linkedinHeaders(accessToken) }
+      { headers: this.linkedinHeaders(accessToken) },
+      'organization_details',
+      true
     );
-    const data = await response.json();
-    if (!response.ok || !data.id || !data.localizedName) {
-      throw new Error('LinkedIn organization details lookup failed');
+    if (!data.id || !data.localizedName) {
+      throw new ProviderConnectionError('organization_details', 200);
     }
 
     return {
@@ -261,7 +324,7 @@ export class LinkedinPageProvider
     body.append('client_id', this.pageClientId);
     body.append('client_secret', this.pageClientSecret);
 
-    const response = await fetch(
+    const token = await this.linkedinJson(
       'https://www.linkedin.com/oauth/v2/accessToken',
       {
         method: 'POST',
@@ -269,11 +332,11 @@ export class LinkedinPageProvider
           'Content-Type': 'application/x-www-form-urlencoded',
         },
         body,
-      }
+      },
+      'token_exchange'
     );
-    const token = await response.json();
-    if (!response.ok || !token.access_token) {
-      throw new Error('LinkedIn token exchange failed');
+    if (!token.access_token) {
+      throw new ProviderConnectionError('token_exchange', 200);
     }
     const {
       access_token: accessToken,

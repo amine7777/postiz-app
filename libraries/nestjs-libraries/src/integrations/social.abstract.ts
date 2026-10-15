@@ -32,6 +32,16 @@ export class NotEnoughScopes {
   ) {}
 }
 
+export class ProviderConnectionError extends Error {
+  constructor(
+    public readonly stage: string,
+    public readonly status?: number
+  ) {
+    super('Social provider connection failed');
+    this.name = 'ProviderConnectionError';
+  }
+}
+
 function safeStringify(obj: any) {
   const seen = new WeakSet();
 

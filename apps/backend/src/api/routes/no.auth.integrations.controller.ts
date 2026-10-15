@@ -19,7 +19,10 @@ import { ApiTags } from '@nestjs/swagger';
 import { NotEnoughScopesFilter } from '@gitroom/nestjs-libraries/integrations/integration.missing.scopes';
 import { AuthService } from '@gitroom/helpers/auth/auth.service';
 import { AuthTokenDetails } from '@gitroom/nestjs-libraries/integrations/social/social.integrations.interface';
-import { NotEnoughScopes } from '@gitroom/nestjs-libraries/integrations/social.abstract';
+import {
+  NotEnoughScopes,
+  ProviderConnectionError,
+} from '@gitroom/nestjs-libraries/integrations/social.abstract';
 import {
   AuthorizationActions,
   Sections,
@@ -385,7 +388,10 @@ export class NoAuthIntegrationsController {
       const code = ['SESSION_EXPIRED', 'INVALID_ATTEMPT'].includes(known) ? known
         : expired ? 'SESSION_EXPIRED' : error instanceof NotEnoughScopes ? 'PROVIDER_REJECTED'
         : pendingId ? 'SAVE_FAILED' : 'CONNECTION_FAILED';
-      this.connectLogger.warn(JSON.stringify({ event: 'connect_failed', requestId, provider: provider || context?.provider, code }));
+      const providerFailure = error instanceof ProviderConnectionError
+        ? { stage: error.stage, ...(error.status ? { status: error.status } : {}) }
+        : {};
+      this.connectLogger.warn(JSON.stringify({ event: 'connect_failed', requestId, provider: provider || context?.provider, code, ...providerFailure }));
       throw new HttpException({ code, requestId, ...(context ? { returnURL: context.returnURL, flow: 'external' } : {}) }, code === 'SESSION_EXPIRED' ? 410 : error instanceof HttpException ? error.getStatus() : 400);
     }
   }
