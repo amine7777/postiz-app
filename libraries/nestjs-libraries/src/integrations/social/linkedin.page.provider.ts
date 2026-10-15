@@ -12,6 +12,9 @@ import { Integration } from '@prisma/client';
 import { Plug } from '@gitroom/helpers/decorators/plug.decorator';
 import { timer } from '@gitroom/helpers/utils/timer';
 import { Rules } from '@gitroom/nestjs-libraries/chat/rules.description.decorator';
+import { NotEnoughScopes } from '@gitroom/nestjs-libraries/integrations/social.abstract';
+
+const LINKEDIN_API_VERSION = '202601';
 
 @Rules(
   'LinkedIn can have maximum one attachment when selecting video, when choosing a carousel on LinkedIn minimum amount of attachment must be two, and only pictures, if uploading a video, LinkedIn can have only one attachment'
@@ -54,6 +57,15 @@ export class LinkedinPageProvider
     );
   }
 
+  private linkedinHeaders(accessToken: string) {
+    return {
+      Authorization: `Bearer ${accessToken}`,
+      'X-Restli-Protocol-Version': '2.0.0',
+      'LinkedIn-Version': LINKEDIN_API_VERSION,
+      'Content-Type': 'application/json',
+    };
+  }
+
   // Identity for the page app without openid/profile: use the admin org list.
   private async firstAdminOrg(accessToken: string) {
     const orgs = await this.companies(accessToken);
@@ -63,12 +75,9 @@ export class LinkedinPageProvider
   override async refreshToken(
     refresh_token: string
   ): Promise<AuthTokenDetails> {
-    const {
-      access_token: accessToken,
-      expires_in,
-      refresh_token: refreshToken,
-    } = await (
-      await fetch('https://www.linkedin.com/oauth/v2/accessToken', {
+    const response = await fetch(
+      'https://www.linkedin.com/oauth/v2/accessToken',
+      {
         method: 'POST',
         headers: {
           'Content-Type': 'application/x-www-form-urlencoded',
@@ -79,8 +88,17 @@ export class LinkedinPageProvider
           client_id: this.pageClientId,
           client_secret: this.pageClientSecret,
         }),
-      })
-    ).json();
+      }
+    );
+    const token = await response.json();
+    if (!response.ok || !token.access_token) {
+      throw new Error('LinkedIn token refresh failed');
+    }
+    const {
+      access_token: accessToken,
+      expires_in,
+      refresh_token: refreshToken,
+    } = token;
 
     // No openid/profile on the page app → identity from the admin org list.
     const org = await this.firstAdminOrg(accessToken);
@@ -100,7 +118,7 @@ export class LinkedinPageProvider
     integration: Integration,
     originalIntegration: Integration,
     postId: string,
-    information: any,
+    information: any
   ) {
     return super.addComment(
       integration,
@@ -142,28 +160,49 @@ export class LinkedinPageProvider
   }
 
   async companies(accessToken: string) {
-    const { elements, ...all } = await (
-      await fetch(
-        'https://api.linkedin.com/v2/organizationalEntityAcls?q=roleAssignee&role=ADMINISTRATOR&projection=(elements*(organizationalTarget~(localizedName,vanityName,logoV2(original~:playableStreams))))',
-        {
-          headers: {
-            Authorization: `Bearer ${accessToken}`,
-            'X-Restli-Protocol-Version': '2.0.0',
-            'LinkedIn-Version': '202601',
-          },
-        }
-      )
-    ).json();
+    const response = await fetch(
+      'https://api.linkedin.com/rest/organizationAcls?q=roleAssignee&role=ADMINISTRATOR&state=APPROVED',
+      { headers: this.linkedinHeaders(accessToken) }
+    );
+    const data = await response.json();
+    if (!response.ok) {
+      throw new Error('LinkedIn organization lookup failed');
+    }
 
-    return (elements || []).map((e: any) => ({
-      id: e.organizationalTarget.split(':').pop(),
-      page: e.organizationalTarget.split(':').pop(),
-      username: e['organizationalTarget~'].vanityName,
-      name: e['organizationalTarget~'].localizedName,
-      picture:
-        e['organizationalTarget~'].logoV2?.['original~']?.elements?.[0]
-          ?.identifiers?.[0]?.identifier,
-    }));
+    const pageIds = Array.from(
+      new Set<string>(
+        (data.elements || []).flatMap((entry: any) => {
+          const urn = entry.organizationTarget || entry.organization;
+          const id = typeof urn === 'string' ? urn.split(':').pop() : undefined;
+          return id ? [id] : [];
+        })
+      )
+    );
+
+    const pages = await Promise.allSettled(
+      pageIds.map(async (page) => {
+        const information = await this.fetchPageInformation(accessToken, {
+          page,
+        });
+        return {
+          id: String(information.id),
+          page: String(information.id),
+          username: information.username,
+          name: information.name,
+          picture: information.picture,
+        };
+      })
+    );
+
+    const availablePages = pages.flatMap((page) =>
+      page.status === 'fulfilled' ? [page.value] : []
+    );
+
+    if (pageIds.length && !availablePages.length) {
+      throw new Error('LinkedIn organization details lookup failed');
+    }
+
+    return availablePages;
   }
 
   async reConnect(
@@ -186,16 +225,16 @@ export class LinkedinPageProvider
 
   async fetchPageInformation(accessToken: string, params: { page: string }) {
     const pageId = params.page;
-    const data = await (
-      await fetch(
-        `https://api.linkedin.com/v2/organizations/${pageId}?projection=(id,localizedName,vanityName,logoV2(original~:playableStreams))`,
-        {
-          headers: {
-            Authorization: `Bearer ${accessToken}`,
-          },
-        }
-      )
-    ).json();
+    const response = await fetch(
+      `https://api.linkedin.com/rest/organizations/${encodeURIComponent(
+        pageId
+      )}?projection=(id,localizedName,vanityName,logoV2(original~:playableStreams))`,
+      { headers: this.linkedinHeaders(accessToken) }
+    );
+    const data = await response.json();
+    if (!response.ok || !data.id || !data.localizedName) {
+      throw new Error('LinkedIn organization details lookup failed');
+    }
 
     return {
       id: data.id,
@@ -222,27 +261,43 @@ export class LinkedinPageProvider
     body.append('client_id', this.pageClientId);
     body.append('client_secret', this.pageClientSecret);
 
-    const {
-      access_token: accessToken,
-      expires_in: expiresIn,
-      refresh_token: refreshToken,
-      scope,
-    } = await (
-      await fetch('https://www.linkedin.com/oauth/v2/accessToken', {
+    const response = await fetch(
+      'https://www.linkedin.com/oauth/v2/accessToken',
+      {
         method: 'POST',
         headers: {
           'Content-Type': 'application/x-www-form-urlencoded',
         },
         body,
-      })
-    ).json();
+      }
+    );
+    const token = await response.json();
+    if (!response.ok || !token.access_token) {
+      throw new Error('LinkedIn token exchange failed');
+    }
+    const {
+      access_token: accessToken,
+      expires_in: expiresIn,
+      refresh_token: refreshToken,
+      scope,
+    } = token;
 
-    this.checkScopes(this.scopes, scope);
+    // LinkedIn authorization is all-or-nothing. Some successful token responses
+    // omit `scope`, so validate it when present and verify real access through
+    // the organization lookup below.
+    if (typeof scope === 'string' && scope.trim()) {
+      this.checkScopes(this.scopes, scope);
+    }
 
     // The page app has no openid/profile → the intermediate identity is the
     // first org the member administers. The full list is offered next via
     // companies() (isBetweenSteps), so the user picks the right page.
     const org = await this.firstAdminOrg(accessToken);
+    if (!org) {
+      throw new NotEnoughScopes(
+        'The LinkedIn member does not administer an approved organization'
+      );
+    }
 
     return {
       id: org?.id || '',
@@ -420,7 +475,9 @@ export class LinkedinPageProvider
     // Fetch share statistics for the specific post
     const shareStatsUrl = `https://api.linkedin.com/v2/organizationalEntityShareStatistics?q=organizationalEntity&organizationalEntity=${encodeURIComponent(
       `urn:li:organization:${integrationId}`
-    )}&shares=List(${encodeURIComponent(postId)})&timeIntervals=(timeRange:(start:${startDate},end:${endDate}),timeGranularityType:DAY)`;
+    )}&shares=List(${encodeURIComponent(
+      postId
+    )})&timeIntervals=(timeRange:(start:${startDate},end:${endDate}),timeGranularityType:DAY)`;
 
     const { elements: shareElements }: { elements: PostShareStatElement[] } =
       await (
