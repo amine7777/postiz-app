@@ -6,7 +6,10 @@ import {
   Param,
   Post,
   UseFilters,
+  Logger,
 } from '@nestjs/common';
+import { randomUUID } from 'node:crypto';
+import { safeConnectReturn, RETURN_TTL } from '@gitroom/helpers/auth/connect-return';
 import { ioRedis } from '@gitroom/nestjs-libraries/redis/redis.service';
 import { ConnectIntegrationDto } from '@gitroom/nestjs-libraries/dtos/integrations/connect.integration.dto';
 import { IntegrationManager } from '@gitroom/nestjs-libraries/integrations/integration.manager';
@@ -28,6 +31,7 @@ import { ProviderCredentialService } from '@gitroom/nestjs-libraries/database/pr
 @ApiTags('Integrations')
 @Controller('/integrations')
 export class NoAuthIntegrationsController {
+  private readonly connectLogger = new Logger('ConnectOutcome');
   constructor(
     private _integrationManager: IntegrationManager,
     private _integrationService: IntegrationService,
@@ -48,6 +52,10 @@ export class NoAuthIntegrationsController {
     @Param('integration') integration: string,
     @Body() body: ConnectIntegrationDto
   ) {
+    return this.connectOutcome(body.state, integration, undefined, () => this.connectSocialMediaImpl(integration, body));
+  }
+
+  private async connectSocialMediaImpl(integration: string, body: ConnectIntegrationDto) {
     if (
       !this._integrationManager
         .getAllowedSocialsIntegrations()
@@ -328,6 +336,10 @@ export class NoAuthIntegrationsController {
 
   @Post('/public/provider/:id/connect')
   async saveProviderPage(@Param('id') id: string, @Body() body: any) {
+    return this.connectOutcome(body.state, undefined, id, () => this.saveProviderPageImpl(id, body));
+  }
+
+  private async saveProviderPageImpl(id: string, body: any) {
     if (!body.state) {
       throw new Error('Invalid state');
     }
@@ -352,6 +364,46 @@ export class NoAuthIntegrationsController {
       ...(result && typeof result === 'object' ? result : { result }),
       ...(returnURL ? { returnURL } : {}),
     };
+  }
+
+  private async connectOutcome(state: string, provider: string | undefined, pendingId: string | undefined, work: () => Promise<any>) {
+    const requestId = randomUUID();
+    let context: any;
+    try {
+      const raw = await ioRedis.get(`connect-context:${state}`);
+      context = raw ? JSON.parse(raw) : undefined;
+      if (context) {
+        safeConnectReturn(context.returnURL);
+        const org = await ioRedis.get(`organization:${state}`);
+        if (!org || org !== context.orgId) throw new HttpException({ code: 'SESSION_EXPIRED' }, 410);
+        if ((provider && provider !== context.provider) || (pendingId && pendingId !== context.pendingIntegrationId)) {
+          throw new HttpException({ code: 'INVALID_ATTEMPT' }, 400);
+        }
+      }
+      const result = await work();
+      if (!context) return { ...result, flow: 'native' };
+      if (result.inBetweenSteps) {
+        context.pendingIntegrationId = result.id;
+        await ioRedis.set(`connect-context:${state}`, JSON.stringify(context), 'EX', RETURN_TTL);
+        return { ...result, flow: 'external', returnURL: context.returnURL };
+      }
+      const saved = await this._integrationService.getIntegrationById(context.orgId, result.id);
+      if (!saved || saved.deletedAt || saved.inBetweenSteps || saved.providerIdentifier !== context.provider) throw new Error('Unconfirmed integration');
+      const receipt = randomUUID();
+      await ioRedis.set(`connect-result:${receipt}`, JSON.stringify({
+        orgId: context.orgId, linkId: context.linkId, state, provider: context.provider, integrationId: saved.id,
+      }), 'EX', RETURN_TTL);
+      return { ...result, flow: 'external', returnURL: context.returnURL, receipt };
+    } catch (error: any) {
+      const supplied = error instanceof HttpException ? error.getResponse() : undefined;
+      const known = typeof supplied === 'object' ? (supplied as any)?.code : undefined;
+      const expired = ['Invalid state', 'Organization not found'].includes(error?.message);
+      const code = ['SESSION_EXPIRED', 'INVALID_ATTEMPT'].includes(known) ? known
+        : expired ? 'SESSION_EXPIRED' : error instanceof NotEnoughScopes ? 'PROVIDER_REJECTED'
+        : pendingId ? 'SAVE_FAILED' : 'CONNECTION_FAILED';
+      this.connectLogger.warn(JSON.stringify({ event: 'connect_failed', requestId, provider: provider || context?.provider, code }));
+      throw new HttpException({ code, requestId, ...(context ? { returnURL: context.returnURL, flow: 'external' } : {}) }, code === 'SESSION_EXPIRED' ? 410 : error instanceof HttpException ? error.getStatus() : 400);
+    }
   }
 
   @Post('/extension-refresh')

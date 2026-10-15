@@ -1,4 +1,5 @@
 import { NextResponse } from 'next/server';
+import { readReturnContext, returnCookieName } from '@gitroom/helpers/auth/connect-return';
 import type { NextRequest } from 'next/server';
 import { getCookieUrlFromDomain } from '@gitroom/helpers/subdomain/subdomain.management';
 import { internalFetch } from '@gitroom/helpers/utils/internal.fetch';
@@ -25,6 +26,14 @@ export async function proxy(request: NextRequest) {
       );
 
   const requestHeaders = new Headers(request.headers);
+  // Always overwrite client-supplied navigation context. Next merges response
+  // cookie deletions into SSR cookies(), so preserve the verified value here.
+  requestHeaders.delete('x-postiz-connect-return');
+  const callbackState = nextUrl.searchParams.get('state') || nextUrl.searchParams.get('oauth_token');
+  if (nextUrl.pathname.startsWith('/integrations/social/') && callbackState) {
+    const returnURL = readReturnContext(callbackState, request.cookies.get(returnCookieName(callbackState))?.value);
+    if (returnURL) requestHeaders.set('x-postiz-connect-return', returnURL);
+  }
   if (lng) {
     requestHeaders.set(headerName, lng);
   }
@@ -56,6 +65,10 @@ export async function proxy(request: NextRequest) {
     nextUrl.pathname.startsWith('/integrations/social/') &&
     nextUrl.href.indexOf('state=login') === -1
   ) {
+    // SSR receives the verified header above, while the browser discards
+    // this navigation-only context as soon as the callback has been rendered.
+    const state = nextUrl.searchParams.get('state') || nextUrl.searchParams.get('oauth_token');
+    if (state) topResponse.cookies.set(returnCookieName(state), '', { path: '/', maxAge: 0, httpOnly: true });
     return topResponse;
   }
 
