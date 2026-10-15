@@ -3,6 +3,8 @@ import { NoAuthIntegrationsController } from './no.auth.integrations.controller'
 import { ConnectLinkController } from './connect-link.controller';
 import { ioRedis } from '@gitroom/nestjs-libraries/redis/redis.service';
 import { AuthService } from '@gitroom/helpers/auth/auth.service';
+import { Logger } from '@nestjs/common';
+import { ProviderConnectionError } from '@gitroom/nestjs-libraries/integrations/social.abstract';
 import { readReturnContext } from '@gitroom/helpers/auth/connect-return';
 jest.mock('@gitroom/nestjs-libraries/upload/upload.factory', () => ({
   UploadFactory: {
@@ -31,6 +33,9 @@ jest.mock('@gitroom/nestjs-libraries/redis/redis.service', () => ({
 jest.mock('@gitroom/nestjs-libraries/integrations/social.abstract', () => ({
   RefreshToken: class {},
   NotEnoughScopes: class {},
+  ProviderConnectionError: class ProviderConnectionError extends Error {
+    constructor(public stage: string, public status?: number) { super('Social provider connection failed'); }
+  },
 }));
 jest.mock(
   '@gitroom/nestjs-libraries/database/prisma/organizations/organization.service',
@@ -144,7 +149,10 @@ describe('external OAuth contract',()=>{
  });
  it('does not report a provider transport failure as a permission rejection',async()=>{
   const f=fixture();f.store.set('connect-context:state',JSON.stringify({orgId:'org-a',linkId:'link-a',provider:'linkedin-page',returnURL:'https://app.plumeza.io/connect/token'}));f.store.set('organization:state','org-a');
-  await expect((f.controller as any).connectOutcome('state','linkedin-page',undefined,async()=>{throw new Error('LinkedIn token exchange failed');})).rejects.toMatchObject({response:{code:'CONNECTION_FAILED'}});
+  const warning=jest.spyOn(Logger.prototype,'warn').mockImplementation(()=>undefined as any);
+  await expect((f.controller as any).connectOutcome('state','linkedin-page',undefined,async()=>{throw new ProviderConnectionError('token_exchange',400);})).rejects.toMatchObject({response:{code:'CONNECTION_FAILED'}});
+  expect(warning).toHaveBeenCalledWith(expect.stringContaining('"stage":"token_exchange"'));
+  expect(warning).toHaveBeenCalledWith(expect.stringContaining('"status":400'));
  });
  it('preserves explicit native success and never creates a branded receipt for it',async()=>{
   const f=fixture();expect(await (f.controller as any).connectOutcome('native-state','linkedin-page',undefined,async()=>({id:'native-id'}))).toEqual({id:'native-id',flow:'native'});
