@@ -2,6 +2,9 @@
 module.exports = {
   testEnvironment: '<rootDir>/test/connection-jsdom-environment.cjs',
   testMatch: [
+    '<rootDir>/apps/frontend/src/proxy.connect.spec.ts',
+    '<rootDir>/apps/backend/src/api/routes/connect-return.spec.ts',
+    '<rootDir>/libraries/helpers/src/auth/connect-return.spec.ts',
     '<rootDir>/apps/frontend/src/components/launches/continue.integration.spec.tsx',
     '<rootDir>/libraries/nestjs-libraries/src/database/prisma/integrations/integration.repository.spec.ts',
     '<rootDir>/libraries/nestjs-libraries/src/database/prisma/integrations/integration.connection.integration.spec.ts',

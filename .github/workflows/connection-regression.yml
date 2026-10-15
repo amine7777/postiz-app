@@ -4,7 +4,10 @@ on:
   pull_request:
     paths:
       - 'apps/backend/src/api/routes/**'
+      - 'libraries/helpers/src/auth/connect-return*'
       - 'apps/frontend/src/components/launches/**'
+      - 'apps/frontend/src/proxy*'
+      - 'apps/frontend/src/app/(app)/integrations/social/**'
       - 'libraries/nestjs-libraries/src/database/prisma/**'
       - 'jest.social-connect.config.cjs'
       - 'test/connection-jsdom-environment.cjs'

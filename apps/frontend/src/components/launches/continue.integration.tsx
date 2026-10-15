@@ -1,11 +1,9 @@
 'use client';
 
-import { FC, useCallback, useEffect, useMemo, useState } from 'react';
+import { FC, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { HttpStatusCode } from 'axios';
 import { useRouter } from 'next/navigation';
-import { Redirect } from '@gitroom/frontend/components/layout/redirect';
 import { useT } from '@gitroom/react/translation/get.transation.service.client';
-import { useFetch } from '@gitroom/helpers/utils/custom.fetch';
 import dayjs from 'dayjs';
 import { continueProviderList } from '@gitroom/frontend/components/new-launch/providers/continue-provider/list';
 import { IntegrationContext } from '@gitroom/frontend/components/launches/helpers/use.integration';
@@ -27,11 +25,12 @@ export const ContinueIntegration: FC<{
   provider: string;
   searchParams: any;
   logged: boolean;
+  brandedReturnURL?: string;
+  fallbackReturnURL?: string;
 }> = (props) => {
-  const { provider, searchParams, logged } = props;
+  const { provider, searchParams, logged, brandedReturnURL, fallbackReturnURL } = props;
   const { push } = useRouter();
   const t = useT();
-  const fetch = useFetch();
   const { extensionId, backendUrl } = useVariables();
   const [error, setError] = useState(false);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
@@ -39,27 +38,55 @@ export const ContinueIntegration: FC<{
   const [successState, setSuccessState] = useState<SuccessState | null>(null);
   const [isSaving, setIsSaving] = useState(false);
 
-  // Helper to handle navigation - redirects if logged or returnURL exists, otherwise shows inline
-  const navigateOrShow = useCallback(
-    (path: string, returnURL: string | undefined, successMessage: string) => {
-      if (returnURL) {
-        // If returnURL exists, always redirect to it with the path params
-        const params = path.includes('?') ? path.split('?')[1] : '';
-        const destination = new URL(returnURL, window.location.origin);
-        new URLSearchParams(params).forEach((value, key) => {
-          destination.searchParams.set(key, value);
-        });
-        push(destination.toString());
-      } else if (logged) {
-        // If logged in without returnURL, use normal navigation
-        push(path);
-      } else {
-        // If not logged in without returnURL, show success inline
-        setSuccessState({ message: successMessage });
-      }
-    },
-    [logged, push]
-  );
+  const started = useRef(false);
+  // Public OAuth callbacks must not run the authenticated fetch interceptor:
+  // a stale Postiz cookie must neither redirect to /auth nor leave a pending promise.
+  const fetch = async (path: string, options: RequestInit) => {
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), 30000);
+    try {
+      const response = await globalThis.fetch(`${backendUrl}${path}`, {
+        ...options, credentials: 'include', headers: { 'Content-Type': 'application/json' }, signal: controller.signal,
+      });
+      const data = await response.json();
+      return { status: response.status, data };
+    } finally { clearTimeout(timeout); }
+  };
+  const fail = (code: string, data: any = {}, returnURL?: string) => {
+    const base = brandedReturnURL || returnURL || fallbackReturnURL;
+    if (base) {
+      const destination = new URL(base, window.location.origin);
+      // A callback failure can never carry the legacy success marker.
+      ['success', 'added', 'msg', 'status', 'receipt', 'code', 'requestId', 'onboarding'].forEach(key => destination.searchParams.delete(key));
+      destination.searchParams.set('status', 'error');
+      destination.searchParams.set('provider', provider);
+      const allowed = ['SESSION_EXPIRED', 'PROVIDER_REJECTED', 'SAVE_FAILED', 'CONNECTION_FAILED', 'INVALID_ATTEMPT', 'RESULT_MISSING', 'CONNECTION_NOT_ALLOWED'];
+      destination.searchParams.set('code', allowed.includes(code) ? code : 'CONNECTION_FAILED');
+      if (typeof data.requestId === 'string' && /^[0-9a-f-]{36}$/i.test(data.requestId)) destination.searchParams.set('requestId', data.requestId);
+      push(destination.toString());
+      return;
+    }
+    setErrorMessage('Could not connect channel. Please start a new connection.');
+    setError(true);
+  };
+  const navigateOrShow = (path: string, returnURL: string | undefined, message: string, receipt?: string, flow?: string) => {
+    if (brandedReturnURL || flow === 'external') {
+      const base = brandedReturnURL || returnURL || fallbackReturnURL;
+      if (!base || !receipt) return fail('RESULT_MISSING', {}, base);
+      const destination = new URL(base, window.location.origin);
+      ['success', 'added', 'msg', 'code', 'requestId', 'onboarding'].forEach(key => destination.searchParams.delete(key));
+      destination.searchParams.set('status', 'connected');
+      destination.searchParams.set('provider', provider);
+      destination.searchParams.set('receipt', receipt);
+      push(destination.toString());
+    } else if (returnURL) {
+      const destination = new URL(returnURL, window.location.origin);
+      new URLSearchParams(path.split('?')[1] || '').forEach((value, key) => destination.searchParams.set(key, value));
+      push(destination.toString());
+    } else if (flow === 'native' && logged) push(path);
+    else if (fallbackReturnURL) fail('RESULT_MISSING');
+    else setSuccessState({ message });
+  };
   const modifiedParams = useMemo(() => {
     if (provider === 'mewe') {
       return {
@@ -99,58 +126,19 @@ export const ContinueIntegration: FC<{
   }, []);
 
   useEffect(() => {
+    if (started.current) return;
+    started.current = true;
     (async () => {
+      if (searchParams.error) { fail('PROVIDER_REJECTED'); return; }
       const timezone = String(dayjs.tz().utcOffset());
-
-      // Try public endpoint first (handles both public and fallback scenarios)
-      let data = await fetch(`/integrations/social-connect/${provider}`, {
-        method: 'POST',
-        body: JSON.stringify({ ...modifiedParams, timezone }),
+      const response = await fetch(`/integrations/social-connect/${provider}`, {
+        method: 'POST', body: JSON.stringify({ ...modifiedParams, timezone }),
       });
-
-      // If public endpoint fails with specific errors, try authenticated endpoint
-      if (data.status === HttpStatusCode.BadRequest) {
-        const errorData = await data.json().catch(() => ({}));
-        // "Invalid connection type" means this wasn't started as a public flow
-        if (
-          errorData.message?.includes('Invalid connection type') ||
-          errorData.message?.includes('Invalid or expired state')
-        ) {
-          data = await fetch(`/integrations/social-connect/${provider}`, {
-            method: 'POST',
-            body: JSON.stringify({ ...modifiedParams, timezone }),
-          });
-        }
-      }
-
-      if (data.status === HttpStatusCode.PreconditionFailed) {
-        const { returnURL } = await data.json().catch(() => ({}));
-        navigateOrShow(
-          `/launches?precondition=true`,
-          returnURL,
-          'Precondition failed'
-        );
+      const data = response.data;
+      if (![HttpStatusCode.Ok, HttpStatusCode.Created].includes(response.status)) {
+        fail(data.code || (response.status === 412 ? 'CONNECTION_NOT_ALLOWED' : 'CONNECTION_FAILED'), data);
         return;
       }
-
-      if (data.status === HttpStatusCode.NotAcceptable) {
-        const { msg, returnURL } = await data.json();
-        navigateOrShow(`/launches?msg=${msg}`, returnURL, msg);
-        return;
-      }
-
-      if (
-        data.status !== HttpStatusCode.Ok &&
-        data.status !== HttpStatusCode.Created
-      ) {
-        const errorData = await data.json().catch(() => ({}));
-        setErrorMessage(
-          errorData.message || errorData.msg || 'Could not add provider'
-        );
-        setError(true);
-        return;
-      }
-
       const {
         inBetweenSteps,
         id,
@@ -158,7 +146,8 @@ export const ContinueIntegration: FC<{
         pages,
         returnURL,
         extensionToken,
-      } = await data.json();
+        receipt, flow,
+      } = data;
       const onboarding = resOnboarding || searchParams.onboarding === 'true';
 
       // Store refresh token in extension for background cookie refresh
@@ -201,11 +190,10 @@ export const ContinueIntegration: FC<{
           onboarding ? '&onboarding=true' : ''
         }`,
         returnURL,
-        'Channel Updated'
+        'Channel Updated', receipt, flow
       );
     })().catch(() => {
-      setErrorMessage('Could not connect channel. Please try again.');
-      setError(true);
+      fail('CONNECTION_FAILED');
     });
   }, []);
 
@@ -228,19 +216,12 @@ export const ContinueIntegration: FC<{
           body: JSON.stringify({ ...modifiedParams, ...data }),
         });
 
-        const saveData = await response.json().catch(() => ({} as any));
+        const saveData = response.data;
 
-        if (
-          response.status !== HttpStatusCode.Ok &&
-          response.status !== HttpStatusCode.Created
-        ) {
-          setErrorMessage(
-            saveData?.message || 'Failed to save channel configuration'
-          );
-          setError(true);
+        if (![HttpStatusCode.Ok, HttpStatusCode.Created].includes(response.status)) {
+          fail(saveData.code || 'SAVE_FAILED', saveData, twoStepState.returnURL);
           return;
         }
-
         // Prefer the returnURL from the save response (freshly read from Redis at
         // the final step) and fall back to the one captured on the first call —
         // so two-step providers (LinkedIn page, Facebook…) reliably redirect back.
@@ -249,11 +230,10 @@ export const ContinueIntegration: FC<{
             twoStepState.onboarding ? '&onboarding=true' : ''
           }`,
           saveData?.returnURL || twoStepState.returnURL,
-          'Channel Added'
+          'Channel Added', saveData.receipt, saveData.flow
         );
       } catch {
-        setErrorMessage('Could not save channel configuration. Please try again.');
-        setError(true);
+        fail('SAVE_FAILED', {}, twoStepState.returnURL);
       } finally {
         setIsSaving(false);
       }
@@ -416,7 +396,7 @@ export const ContinueIntegration: FC<{
                 'An error occurred. Please try again.'
               )}
           </div>
-          {logged && <Redirect url="/launches" delay={3000} />}
+
         </div>
       </div>
     );

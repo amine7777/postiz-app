@@ -1,4 +1,5 @@
 import React from 'react';
+import { act } from '@testing-library/react';
 import {
   afterEach,
   beforeEach,
@@ -27,9 +28,6 @@ jest.mock('@gitroom/react/translation/get.transation.service.client', () => ({
 }));
 jest.mock('@gitroom/react/helpers/variable.context', () => ({
   useVariables: () => ({ backendUrl: '/api' }),
-}));
-jest.mock('@gitroom/frontend/components/layout/redirect', () => ({
-  Redirect: (): null => null,
 }));
 jest.mock('@gitroom/frontend/components/layout/set.timezone', () => ({
   newDayjs: (): null => null,
@@ -60,144 +58,63 @@ jest.mock(
   })
 );
 
-const response = (status: number, body: unknown) => ({
-  status,
-  json: async () => body,
-});
+const response = (status: number, body: unknown) => ({ status, json: async () => body });
 const callback = { code: 'test-code', state: 'test-state' };
-const returnURL =
-  'https://app.plumeza.io/connect/test-link?success=linkedin-page';
-const selection = {
-  id: 'pending-integration',
-  inBetweenSteps: true,
-  pages: [] as unknown[],
-  returnURL,
-};
+const returnURL = 'https://app.plumeza.io/connect/test-link';
+const fallbackReturnURL = 'https://app.plumeza.io/connect/error';
+const receipt = 'aa178550-cdb0-49b2-b612-35c57443f8a2';
+const selection = { id: 'pending-integration', inBetweenSteps: true, pages: [] as unknown[], returnURL, flow: 'external' };
+const props = { provider:'linkedin-page', searchParams:callback, logged:true, brandedReturnURL:returnURL, fallbackReturnURL };
 async function showSelection(logged = true) {
-  mockFetch.mockResolvedValueOnce(response(201, selection));
-  render(
-    <ContinueIntegration
-      provider="linkedin-page"
-      searchParams={callback}
-      logged={logged}
-    />
-  );
-  await screen.findByRole('button', { name: 'Save' });
+ mockFetch.mockResolvedValueOnce(response(201, selection));
+ render(<ContinueIntegration {...props} logged={logged} />);
+ await screen.findByRole('button',{name:'Save'});
 }
+beforeEach(()=>{mockFetch.mockReset();mockPush.mockReset();globalThis.fetch=mockFetch as any;});
+afterEach(()=>{cleanup();jest.useRealTimers();});
 
-beforeEach(() => jest.clearAllMocks());
-afterEach(cleanup);
-
-describe('OAuth page selection', () => {
-  it.each([true, false])(
-    'keeps OAuth state identity when logged=%s',
-    async (logged) => {
-      await showSelection(logged);
-      mockFetch.mockResolvedValueOnce(response(201, { success: true }));
-      fireEvent.click(screen.getByRole('button', { name: 'Save' }));
-      await waitFor(() => expect(mockPush).toHaveBeenCalled());
-      expect(mockFetch).toHaveBeenNthCalledWith(
-        2,
-        '/integrations/public/provider/pending-integration/connect',
-        {
-          method: 'POST',
-          body: JSON.stringify({ ...callback, page: 'page-selected' }),
-        }
-      );
-      const destination = new URL(mockPush.mock.calls[0][0]);
-      expect(destination.origin).toBe('https://app.plumeza.io');
-      expect(destination.searchParams.get('success')).toBe('linkedin-page');
-      expect(destination.searchParams.get('added')).toBe('linkedin-page');
-      expect(destination.searchParams.get('msg')).toBe('Channel Added');
-    }
-  );
-
-  it('shows a save rejection and allows retry without repeating OAuth', async () => {
-    await showSelection();
-    mockFetch.mockResolvedValueOnce(
-      response(404, { message: 'Integration not found' })
-    );
-    fireEvent.click(screen.getByRole('button', { name: 'Save' }));
-    expect((await screen.findByRole('alert')).textContent).toBe(
-      'Integration not found'
-    );
-    expect(mockPush).not.toHaveBeenCalled();
-    await waitFor(() =>
-      expect(
-        (screen.getByRole('button', { name: 'Save' }) as HTMLButtonElement)
-          .disabled
-      ).toBe(false)
-    );
-    mockFetch.mockResolvedValueOnce(response(201, { success: true }));
-    fireEvent.click(screen.getByRole('button', { name: 'Save' }));
-    await waitFor(() => expect(mockPush).toHaveBeenCalledTimes(1));
-    expect(screen.queryByRole('alert')).toBeNull();
-    expect(mockFetch).toHaveBeenCalledTimes(3);
-  });
-
-  it('shows a network failure and releases the Save button', async () => {
-    await showSelection();
-    mockFetch.mockRejectedValueOnce(new Error('Network unavailable'));
-    fireEvent.click(screen.getByRole('button', { name: 'Save' }));
-    expect((await screen.findByRole('alert')).textContent).toContain(
-      'Could not save'
-    );
-    expect(
-      (screen.getByRole('button', { name: 'Save' }) as HTMLButtonElement)
-        .disabled
-    ).toBe(false);
-    expect(mockPush).not.toHaveBeenCalled();
-  });
-
-  it('prefers the final return URL and preserves its query and fragment', async () => {
-    await showSelection();
-    mockFetch.mockResolvedValueOnce(
-      response(201, {
-        success: true,
-        returnURL:
-          'https://app.plumeza.io/connect/final?success=linkedin-page&customer=test#done',
-      })
-    );
-    fireEvent.click(screen.getByRole('button', { name: 'Save' }));
-    await waitFor(() => expect(mockPush).toHaveBeenCalled());
-    const destination = new URL(mockPush.mock.calls[0][0]);
-    expect(destination.pathname).toBe('/connect/final');
-    expect(destination.searchParams.get('success')).toBe('linkedin-page');
-    expect(destination.searchParams.get('customer')).toBe('test');
-    expect(destination.searchParams.get('added')).toBe('linkedin-page');
-    expect(destination.hash).toBe('#done');
-  });
-
-  it('reports an initial connection failure instead of remaining on the spinner', async () => {
-    mockFetch.mockRejectedValueOnce(new Error('Network unavailable'));
-    render(
-      <ContinueIntegration
-        provider="linkedin-page"
-        searchParams={callback}
-        logged={false}
-      />
-    );
-    expect(
-      await screen.findByText('Could not connect channel. Please try again.')
-    ).toBeTruthy();
-    expect(screen.queryByRole('button', { name: 'Save' })).toBeNull();
-  });
-
-  it('preserves the single-step callback return parameters', async () => {
-    mockFetch.mockResolvedValueOnce(
-      response(201, { id: 'channel', returnURL })
-    );
-    render(
-      <ContinueIntegration
-        provider="linkedin"
-        searchParams={callback}
-        logged={true}
-      />
-    );
-    await waitFor(() => expect(mockPush).toHaveBeenCalled());
-    const destination = new URL(mockPush.mock.calls[0][0]);
-    expect(destination.searchParams.get('success')).toBe('linkedin-page');
-    expect(destination.searchParams.get('added')).toBe('linkedin');
-    expect(mockFetch).toHaveBeenCalledTimes(1);
-  });
+describe('branded OAuth outcomes',()=>{
+ it.each([true,false])('returns to Plumeza after saved page with logged=%s',async logged=>{
+  await showSelection(logged);mockFetch.mockResolvedValueOnce(response(201,{flow:'external',receipt,returnURL,id:'saved'}));
+  fireEvent.click(screen.getByRole('button',{name:'Save'}));await waitFor(()=>expect(mockPush).toHaveBeenCalled());
+  const url=new URL(mockPush.mock.calls[0][0]);expect(url.origin).toBe('https://app.plumeza.io');expect(url.searchParams.get('status')).toBe('connected');expect(url.searchParams.get('receipt')).toBe(receipt);expect(url.searchParams.has('success')).toBe(false);
+  expect(mockFetch.mock.calls[1][0]).toBe('/api/integrations/public/provider/pending-integration/connect');
+ });
+ it.each([400,401,403,409,410,412,500])('returns initial HTTP%s errors to Plumeza without Postiz auth interception',async status=>{
+  mockFetch.mockResolvedValueOnce(response(status,{code:'SESSION_EXPIRED',message:'raw token=secret'}));render(<ContinueIntegration {...props}/>);
+  await waitFor(()=>expect(mockPush).toHaveBeenCalled());const url=new URL(mockPush.mock.calls[0][0]);expect(url.pathname).toBe('/connect/test-link');expect(url.searchParams.get('status')).toBe('error');expect(url.searchParams.get('code')).toBe('SESSION_EXPIRED');expect(url.toString()).not.toContain('secret');expect(mockFetch).toHaveBeenCalledTimes(1);
+ });
+ it('includes a stalled response body in the callback deadline',async()=>{
+  jest.useFakeTimers();
+  mockFetch.mockImplementationOnce(async(_url:any,options:any)=>({status:201,json:()=>new Promise((_resolve,reject)=>options.signal.addEventListener('abort',()=>reject(new Error('aborted'))))}));
+  render(<ContinueIntegration {...props}/>);
+  await act(async()=>{await Promise.resolve();});
+  await act(async()=>{jest.advanceTimersByTime(30001);});
+  expect(new URL(mockPush.mock.calls[0][0]).searchParams.get('code')).toBe('CONNECTION_FAILED');
+ });
+ it('uses a branded fallback if Redis context and cookies have expired',async()=>{
+  mockFetch.mockResolvedValueOnce(response(410,{code:'SESSION_EXPIRED'}));render(<ContinueIntegration {...props} brandedReturnURL={undefined}/>);
+  await waitFor(()=>expect(mockPush).toHaveBeenCalled());expect(new URL(mockPush.mock.calls[0][0]).pathname).toBe('/connect/error');
+ });
+ it('handles provider denial before attempting an exchange',async()=>{
+  render(<ContinueIntegration {...props} searchParams={{state:'test-state',error:'access_denied'}}/>);
+  await waitFor(()=>expect(mockPush).toHaveBeenCalled());expect(mockFetch).not.toHaveBeenCalled();expect(new URL(mockPush.mock.calls[0][0]).searchParams.get('code')).toBe('PROVIDER_REJECTED');
+ });
+ it('returns network failure instead of leaving an unresolved loading screen',async()=>{
+  mockFetch.mockRejectedValueOnce(new Error('network failed'));render(<ContinueIntegration {...props}/>);
+  await waitFor(()=>expect(mockPush).toHaveBeenCalled());expect(new URL(mockPush.mock.calls[0][0]).searchParams.get('code')).toBe('CONNECTION_FAILED');
+ });
+ it.each(['server','network'])('returns save %s failure with no success marker',async kind=>{
+  await showSelection();if(kind==='network')mockFetch.mockRejectedValueOnce(new Error('network'));else mockFetch.mockResolvedValueOnce(response(400,{code:'SAVE_FAILED'}));
+  fireEvent.click(screen.getByRole('button',{name:'Save'}));await waitFor(()=>expect(mockPush).toHaveBeenCalled());const url=new URL(mockPush.mock.calls[0][0]);expect(url.searchParams.get('code')).toBe('SAVE_FAILED');expect(url.searchParams.has('success')).toBe(false);expect(url.pathname).not.toBe('/launches');
+ });
+ it('does not claim success without a server receipt',async()=>{
+  await showSelection();mockFetch.mockResolvedValueOnce(response(201,{flow:'external',id:'saved'}));fireEvent.click(screen.getByRole('button',{name:'Save'}));await waitFor(()=>expect(mockPush).toHaveBeenCalled());expect(new URL(mockPush.mock.calls[0][0]).searchParams.get('code')).toBe('RESULT_MISSING');
+ });
+ it('allows an explicitly native successful connection to retain Postiz navigation',async()=>{
+  mockFetch.mockResolvedValueOnce(response(201,{id:'saved',flow:'native',inBetweenSteps:false}));render(<ContinueIntegration provider="linkedin-page" searchParams={callback} logged/>);await waitFor(()=>expect(mockPush).toHaveBeenCalled());expect(mockPush.mock.calls[0][0]).toMatch(/^\/launches\?/);
+ });
+ it('does not automatically redirect a native error just because auth exists',async()=>{
+  mockFetch.mockResolvedValueOnce(response(500,{}));render(<ContinueIntegration provider="linkedin-page" searchParams={callback} logged/>);await screen.findByText('Could not connect channel. Please start a new connection.');expect(mockPush).not.toHaveBeenCalled();
+ });
 });
