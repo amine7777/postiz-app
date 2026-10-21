@@ -104,6 +104,21 @@ export class XProvider extends SocialAbstract implements SocialProvider {
           'The video you are trying to post is longer than 2 minutes, which is not allowed for this account',
       };
     }
+
+    const status = body.match(/(?:"status"|"code")\s*:\s*(\d{3})/)?.[1];
+    const providerMessage = body.match(
+      /(?:"detail"|"message"|"title")\s*:\s*"([^"\\]{1,180})"/
+    )?.[1]
+      ?.replace(/https?:\/\/\S+/g, '[url]')
+      .replace(/[\r\n\u0000-\u001f]/g, ' ');
+    if (status || providerMessage) {
+      const suffix = providerMessage ? `: ${providerMessage}` : '';
+      return {
+        type: 'bad-body',
+        value: `X rejected the request${status ? ` (HTTP ${status})` : ''}${suffix}`,
+      };
+    }
+
     return undefined;
   }
 
@@ -385,6 +400,31 @@ export class XProvider extends SocialAbstract implements SocialProvider {
     );
   }
 
+  private async uploadMediaFile(client: TwitterApi, path: string) {
+    const mediaType = lookup(path) || '';
+    const media = Buffer.from(await readOrFetch(path));
+
+    if (mediaType.startsWith('video/')) {
+      return client.v1.uploadMedia(media, {
+        mimeType: mediaType,
+      });
+    }
+
+    return client.v2.uploadMedia(
+      await sharp(media, {
+        animated: mediaType === 'image/gif',
+      })
+        .resize({
+          width: 1000,
+        })
+        .gif()
+        .toBuffer(),
+      {
+        media_type: mediaType as any,
+      }
+    );
+  }
+
   private async uploadMedia(
     client: TwitterApi,
     postDetails: PostDetails<any>[]
@@ -395,22 +435,7 @@ export class XProvider extends SocialAbstract implements SocialProvider {
           p?.media?.flatMap(async (m) => {
             return {
               id: await this.runInConcurrent(
-                async () =>
-                  client.v2.uploadMedia(
-                    m.path.indexOf('mp4') > -1
-                      ? Buffer.from(await readOrFetch(m.path))
-                      : await sharp(await readOrFetch(m.path), {
-                          animated: lookup(m.path) === 'image/gif',
-                        })
-                          .resize({
-                            width: 1000,
-                          })
-                          .gif()
-                          .toBuffer(),
-                    {
-                      media_type: (lookup(m.path) || '') as any,
-                    }
-                  ),
+                () => this.uploadMediaFile(client, m.path),
                 true
               ),
               postId: p.id,
