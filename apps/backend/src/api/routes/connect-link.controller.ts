@@ -132,10 +132,13 @@ export class ConnectLinkController {
   async start(@Param('bootstrap') bootstrap: string, @Res() response: Response, @Req() request?: Request) {
     response.setHeader('Cache-Control', 'no-store');
     response.setHeader('Referrer-Policy', 'no-referrer');
+    // Send errors back to the app that started this attempt when it is known.
+    let returnOrigin: string | undefined;
     try {
       const raw = await ioRedis.getdel(`connect-bootstrap:${bootstrap}`);
       if (!raw) throw new Error('Expired bootstrap');
       const { state, url, returnURL } = JSON.parse(raw);
+      returnOrigin = new URL(safeConnectReturn(returnURL)).origin;
       const target = new URL(url);
       if (target.protocol !== 'https:') throw new Error('Invalid provider URL');
       // Bound abandoned attempts without evicting another active browser tab.
@@ -149,14 +152,14 @@ export class ConnectLinkController {
         } catch { /* malformed or expired cookie */ }
         if (valid) active++; else response.clearCookie(name, { path: '/' });
       }
-      if (active >= 4) return response.redirect(`${connectOrigin()}/connect/error?code=CONNECTION_FAILED`);
+      if (active >= 4) return response.redirect(`${returnOrigin}/connect/error?code=CONNECTION_FAILED`);
       response.cookie(returnCookieName(state), signReturnContext(state, returnURL), {
         httpOnly: true, secure: process.env.FRONTEND_URL?.startsWith('https://'),
         sameSite: 'lax', path: '/', maxAge: RETURN_TTL * 1000,
       });
       return response.redirect(target.toString());
     } catch {
-      const origin = connectOrigin();
+      const origin = returnOrigin || connectOrigin();
       if (origin) return response.redirect(`${origin}/connect/error?code=SESSION_EXPIRED`);
       throw new HttpException({ code: 'SESSION_EXPIRED' }, 410);
     }

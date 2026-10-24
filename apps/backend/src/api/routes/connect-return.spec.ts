@@ -121,6 +121,22 @@ describe('external OAuth contract',()=>{
   expect(f.response.clearCookie).not.toHaveBeenCalled();
   expect(f.response.redirect).toHaveBeenLastCalledWith('https://app.plumeza.io/connect/error?code=CONNECTION_FAILED');
  });
+ it('accepts any listed return origin and sends its errors back to it',async()=>{
+  process.env.CONNECT_RETURN_ORIGIN='https://app-one.example.com, https://app-two.example.com';
+  const f=fixture();const cookies:Record<string,string>={};
+  const first=await f.links.getOAuthUrl('token','linkedin-page','https://app-two.example.com/connect/token');
+  const raw=JSON.parse(f.store.get('connect-bootstrap:'+first.url.split('/').pop())!);
+  await f.links.start(first.url.split('/').pop()!,f.response as any,{cookies} as any);
+  expect(readReturnContext(raw.state,f.response.cookie.mock.calls[0][1])).toBe('https://app-two.example.com/connect/token');
+  for(let i=0;i<4;i++){
+    const result=await f.links.getOAuthUrl('token','linkedin-page','https://app-one.example.com/connect/token');
+    await f.links.start(result.url.split('/').pop()!,f.response as any,{cookies} as any);
+    const [name,value]=f.response.cookie.mock.calls[i+1];cookies[name]=value;
+  }
+  const overflow=await f.links.getOAuthUrl('token','linkedin-page','https://app-two.example.com/connect/token');
+  await f.links.start(overflow.url.split('/').pop()!,f.response as any,{cookies} as any);
+  expect(f.response.redirect).toHaveBeenLastCalledWith('https://app-two.example.com/connect/error?code=CONNECTION_FAILED');
+ });
  it('refuses an arbitrary browser return origin' ,async()=>{
   const {links}=fixture();await expect(links.getOAuthUrl('token','linkedin-page','https://evil.example/connect/token')).rejects.toMatchObject({status:400});
  });
