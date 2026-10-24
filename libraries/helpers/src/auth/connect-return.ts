@@ -1,17 +1,22 @@
 import { createHash, createHmac, timingSafeEqual } from 'node:crypto';
 
 export const RETURN_TTL = 24 * 60 * 60;
+// CONNECT_RETURN_ORIGIN is a comma-separated list of allowed return origins.
+export function connectOrigins(): string[] {
+  return (process.env.CONNECT_RETURN_ORIGIN || '').split(',').map((entry) => entry.trim()).filter(Boolean).map((raw) => {
+    const url = new URL(raw);
+    if (url.protocol !== 'https:' && !(url.protocol === 'http:' && ['localhost', '127.0.0.1'].includes(url.hostname))) throw new Error('Invalid connect return origin');
+    if (url.username || url.password || url.pathname !== '/' || url.search || url.hash) throw new Error('Invalid connect return origin');
+    return url.origin;
+  });
+}
+// The first origin is the fallback when no return URL is known.
 export function connectOrigin(): string | undefined {
-  const raw = process.env.CONNECT_RETURN_ORIGIN;
-  if (!raw) return undefined;
-  const url = new URL(raw);
-  if (url.protocol !== 'https:' && !(url.protocol === 'http:' && ['localhost', '127.0.0.1'].includes(url.hostname))) throw new Error('Invalid connect return origin');
-  if (url.username || url.password || url.pathname !== '/' || url.search || url.hash) throw new Error('Invalid connect return origin');
-  return url.origin;
+  return connectOrigins()[0];
 }
 export function safeConnectReturn(value: string): string {
   const url = new URL(value);
-  if (!connectOrigin() || url.origin !== connectOrigin() || url.username || url.password || !/^\/connect\/[^/]+$/.test(url.pathname) || url.search || url.hash) throw new Error('Invalid connect return URL');
+  if (!connectOrigins().includes(url.origin) || url.username || url.password || !/^\/connect\/[^/]+$/.test(url.pathname) || url.search || url.hash) throw new Error('Invalid connect return URL');
   return url.toString();
 }
 export function returnCookieName(state: string): string {
