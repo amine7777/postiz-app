@@ -59,6 +59,10 @@ function safeStringify(obj: any) {
 export abstract class SocialAbstract {
   abstract identifier: string;
   maxConcurrentJob = 1;
+  // The org's own OAuth app for this provider, if any. Set by IntegrationManager.
+  appCredentials?: (
+    orgId: string
+  ) => Promise<{ clientId: string; clientSecret: string } | null>;
 
   public handleErrors(
     body: string,

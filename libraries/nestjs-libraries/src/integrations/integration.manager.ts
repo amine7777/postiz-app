@@ -36,6 +36,7 @@ import { MoltbookProvider } from '@gitroom/nestjs-libraries/integrations/social/
 import { SkoolProvider } from '@gitroom/nestjs-libraries/integrations/social/skool.provider';
 import { WhopProvider } from '@gitroom/nestjs-libraries/integrations/social/whop.provider';
 import { MeweProvider } from '@gitroom/nestjs-libraries/integrations/social/mewe.provider';
+import { ProviderCredentialRepository } from '@gitroom/nestjs-libraries/database/prisma/provider-credentials/provider-credential.repository';
 
 export const socialIntegrationList: Array<SocialAbstract & SocialProvider> = [
   new XProvider(),
@@ -76,6 +77,16 @@ export const socialIntegrationList: Array<SocialAbstract & SocialProvider> = [
 
 @Injectable()
 export class IntegrationManager {
+  constructor(providerCredentialRepository: ProviderCredentialRepository) {
+    for (const provider of socialIntegrationList) {
+      provider.appCredentials = (orgId) =>
+        providerCredentialRepository.getByOrgAndProvider(
+          orgId,
+          provider.identifier
+        );
+    }
+  }
+
   async getAllIntegrations() {
     return {
       social: await Promise.all(
