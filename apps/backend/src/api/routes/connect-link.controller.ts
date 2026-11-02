@@ -19,11 +19,16 @@ export class ConnectLinkController {
     private _providerCredentialService: ProviderCredentialService
   ) {}
 
-  private validateToken(token: string): { orgId: string; linkId: string } {
+  private validateToken(token: string): {
+    orgId: string;
+    linkId: string;
+    provider?: string;
+  } {
     try {
       const payload = AuthService.verifyJWT(token) as {
         orgId: string;
         linkId: string;
+        provider?: string;
         expiresAt: string;
       };
 
@@ -35,7 +40,11 @@ export class ConnectLinkController {
         throw new HttpException({ msg: 'Connect link has expired' }, 410);
       }
 
-      return payload;
+      return {
+        orgId: payload.orgId,
+        linkId: payload.linkId,
+        provider: payload.provider?.toLowerCase(),
+      };
     } catch (err) {
       if (err instanceof HttpException) throw err;
       throw new HttpException({ msg: 'Invalid connect link' }, 400);
@@ -44,7 +53,7 @@ export class ConnectLinkController {
 
   @Get('/:token/integrations')
   async getAvailableIntegrations(@Param('token') token: string) {
-    const { orgId } = this.validateToken(token);
+    const { orgId, provider: linkProvider } = this.validateToken(token);
 
     const org = await this._organizationService.getOrgById(orgId);
     if (!org) {
@@ -55,6 +64,15 @@ export class ConnectLinkController {
 
     return integrations.social
       .filter((i) => !i.isWeb3 && !i.isChromeExtension)
+      .filter((integration) => {
+        const identifier = integration.identifier.toLowerCase();
+        if (linkProvider) return identifier === linkProvider;
+        // Legacy/generic bearer links must not expose YouTube during Google review.
+        return (
+          identifier !== 'youtube' ||
+          process.env.POSTIZ_YOUTUBE_OAUTH_ENABLED === 'true'
+        );
+      })
       .map((i) => ({
         name: i.name,
         identifier: i.identifier,
@@ -68,7 +86,18 @@ export class ConnectLinkController {
     // Omission explicitly retains the native Postiz connect-link flow.
     @Query('redirectUrl') redirectUrl?: string
   ) {
-    const { orgId, linkId } = this.validateToken(token);
+    const { orgId, linkId, provider: linkProvider } = this.validateToken(token);
+    const normalizedIntegration = integration.toLowerCase();
+    if (linkProvider && normalizedIntegration !== linkProvider) {
+      throw new HttpException({ msg: 'Integration not allowed for this link' }, 403);
+    }
+    if (
+      !linkProvider &&
+      normalizedIntegration === 'youtube' &&
+      process.env.POSTIZ_YOUTUBE_OAUTH_ENABLED !== 'true'
+    ) {
+      throw new HttpException({ msg: 'Integration not enabled for connect links' }, 403);
+    }
     let returnURL: string | undefined;
     try { if (redirectUrl !== undefined) returnURL = safeConnectReturn(redirectUrl); } catch { throw new HttpException({ code: 'INVALID_RETURN_URL' }, 400); }
 
@@ -113,7 +142,21 @@ export class ConnectLinkController {
       url = authorization.toString();
     }
 
-    const context = { orgId, linkId, provider: integration, returnURL };
+    const context = {
+      orgId,
+      linkId,
+      provider: integration,
+      providerScoped: !!linkProvider,
+      returnURL,
+    };
+    if (linkProvider) {
+      await ioRedis.set(
+        `connect-scope:${state}`,
+        JSON.stringify({ orgId, linkId, provider: integration, providerScoped: true }),
+        'EX',
+        3600
+      );
+    }
     await ioRedis.set(`organization:${state}`, orgId, 'EX', 3600);
     await ioRedis.set(`login:${state}`, codeVerifier, 'EX', 3600);
     if (!returnURL) {

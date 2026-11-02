@@ -30,6 +30,7 @@ import {
 import { RefreshIntegrationService } from '@gitroom/nestjs-libraries/integrations/refresh.integration.service';
 import { OrganizationService } from '@gitroom/nestjs-libraries/database/prisma/organizations/organization.service';
 import { ProviderCredentialService } from '@gitroom/nestjs-libraries/database/prisma/provider-credentials/provider-credential.service';
+import { assertYoutubeOAuthCallbackEnabled } from '../youtube-oauth-gate';
 
 @ApiTags('Integrations')
 @Controller('/integrations')
@@ -356,9 +357,12 @@ export class NoAuthIntegrationsController {
   private async connectOutcome(state: string, provider: string | undefined, pendingId: string | undefined, work: () => Promise<any>) {
     const requestId = randomUUID();
     let context: any;
+    let scopedContext: any;
     try {
       const raw = await ioRedis.get(`connect-context:${state}`);
       context = raw ? JSON.parse(raw) : undefined;
+      const scopedRaw = await ioRedis.get(`connect-scope:${state}`);
+      scopedContext = scopedRaw ? JSON.parse(scopedRaw) : undefined;
       if (context) {
         safeConnectReturn(context.returnURL);
         const org = await ioRedis.get(`organization:${state}`);
@@ -367,11 +371,45 @@ export class NoAuthIntegrationsController {
           throw new HttpException({ code: 'INVALID_ATTEMPT' }, 400);
         }
       }
+      if (scopedContext) {
+        const org = await ioRedis.get(`organization:${state}`);
+        if (!org || org !== scopedContext.orgId) {
+          throw new HttpException({ code: 'SESSION_EXPIRED' }, 410);
+        }
+        if (provider && provider !== scopedContext.provider) {
+          throw new HttpException({ code: 'INVALID_ATTEMPT' }, 400);
+        }
+        if (pendingId) {
+          if (!scopedContext.pendingIntegrationId || pendingId !== scopedContext.pendingIntegrationId) {
+            throw new HttpException({ code: 'INVALID_ATTEMPT' }, 400);
+          }
+          const pending = await this._integrationService.getIntegrationById(scopedContext.orgId, pendingId);
+          if (!pending || pending.deletedAt || !pending.inBetweenSteps || pending.providerIdentifier !== scopedContext.provider) {
+            throw new HttpException({ code: 'INVALID_ATTEMPT' }, 400);
+          }
+        }
+      }
+      assertYoutubeOAuthCallbackEnabled(
+        provider || context?.provider || scopedContext?.provider || '',
+        context || scopedContext
+      );
       const result = await work();
-      if (!context) return { ...result, flow: 'native' };
+      if (!context) {
+        if (scopedContext?.providerScoped && result.inBetweenSteps) {
+          scopedContext.pendingIntegrationId = result.id;
+          await ioRedis.set(`connect-scope:${state}`, JSON.stringify(scopedContext), 'EX', 3600);
+        } else if (scopedContext?.providerScoped) {
+          await ioRedis.del(`connect-scope:${state}`);
+        }
+        return { ...result, flow: 'native' };
+      }
       if (result.inBetweenSteps) {
         context.pendingIntegrationId = result.id;
         await ioRedis.set(`connect-context:${state}`, JSON.stringify(context), 'EX', RETURN_TTL);
+        if (scopedContext?.providerScoped) {
+          scopedContext.pendingIntegrationId = result.id;
+          await ioRedis.set(`connect-scope:${state}`, JSON.stringify(scopedContext), 'EX', 3600);
+        }
         return { ...result, flow: 'external', returnURL: context.returnURL };
       }
       const saved = await this._integrationService.getIntegrationById(context.orgId, result.id);

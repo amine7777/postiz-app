@@ -1,11 +1,13 @@
 /** @jest-environment node */
 import { NoAuthIntegrationsController } from './no.auth.integrations.controller';
 import { ConnectLinkController } from './connect-link.controller';
+import { connectLinkTokenPayload } from '../../public-api/connect-link-token';
 import { ioRedis } from '@gitroom/nestjs-libraries/redis/redis.service';
 import { AuthService } from '@gitroom/helpers/auth/auth.service';
 import { Logger } from '@nestjs/common';
 import { ProviderConnectionError } from '@gitroom/nestjs-libraries/integrations/social.abstract';
 import { readReturnContext } from '@gitroom/helpers/auth/connect-return';
+import { assertNativeYoutubeOAuthEnabled, assertYoutubeOAuthCallbackEnabled } from '../youtube-oauth-gate';
 jest.mock('@gitroom/nestjs-libraries/upload/upload.factory', () => ({
   UploadFactory: {
     createStorage: () => ({ uploadSimple: async (url: string) => url }),
@@ -68,7 +70,7 @@ function fixture() {
  (ioRedis.set as jest.Mock).mockImplementation(async(key:string,value:string)=>{store.set(key,value);return 'OK';});
  (ioRedis.getdel as jest.Mock).mockImplementation(async(key:string)=>{const value=store.get(key);store.delete(key);return value;});
  (ioRedis.del as jest.Mock).mockImplementation(async(key:string)=>{store.delete(key);return 1;});
- const manager={getAllowedSocialsIntegrations:()=>['linkedin-page','x'],getSocialIntegration:()=>({generateAuthUrl:async()=>({state:'original-state',codeVerifier:'verifier',url:'https://linkedin.com/oauth?state=original-state'})})};
+ const manager={getAllowedSocialsIntegrations:()=>['linkedin-page','x','youtube'],getAllIntegrations:()=>({social:[{name:'LinkedIn',identifier:'linkedin-page'},{name:'X',identifier:'x'},{name:'YouTube',identifier:'youtube'}]}),getSocialIntegration:()=>({generateAuthUrl:async()=>({state:'original-state',codeVerifier:'verifier',url:'https://linkedin.com/oauth?state=original-state'})})};
  const integrations={getIntegrationById:jest.fn().mockResolvedValue({id:'saved-id',providerIdentifier:'linkedin-page',inBetweenSteps:false})};
  const orgs={getOrgById:async()=>({id:'org-a'})};
  const creds={getByOrgAndProvider:async()=>null};
@@ -78,9 +80,34 @@ function fixture() {
  const response={setHeader:jest.fn(),cookie:jest.fn(),clearCookie:jest.fn(),redirect:jest.fn()};
  return {store,manager,integrations,links,controller,response};
 }
-beforeEach(()=>{jest.clearAllMocks();process.env.JWT_SECRET='test-only';process.env.CONNECT_RETURN_ORIGIN='https://app.plumeza.io';process.env.FRONTEND_URL='https://postiz.cloudeefy.io';});
+beforeEach(()=>{jest.clearAllMocks();process.env.JWT_SECRET='test-only';process.env.CONNECT_RETURN_ORIGIN='https://app.plumeza.io';process.env.FRONTEND_URL='https://postiz.cloudeefy.io';delete process.env.POSTIZ_YOUTUBE_OAUTH_ENABLED;});
 
 describe('external OAuth contract',()=>{
+ it('signs the provider into a provider-specific connect-link token payload',()=>{
+  expect(connectLinkTokenPayload('org-a','link-a','2099-01-01',' YouTube ')).toEqual({orgId:'org-a',linkId:'link-a',provider:'youtube',expiresAt:'2099-01-01'});
+  expect(connectLinkTokenPayload('org-a','link-a','2099-01-01')).toEqual({orgId:'org-a',linkId:'link-a',expiresAt:'2099-01-01'});
+ });
+ it('hides and rejects YouTube on legacy generic links until enabled',async()=>{
+  const f=fixture();
+  const available=await f.links.getAvailableIntegrations('legacy-token');
+  expect(available.map((item:any)=>item.identifier)).toEqual(['linkedin-page','x']);
+  await expect(f.links.getOAuthUrl('legacy-token','youtube')).rejects.toMatchObject({status:403});
+ });
+ it('limits provider-scoped tokens at Postiz even when their raw URL is opened directly',async()=>{
+  const f=fixture();
+  (AuthService as any).verifyJWT.mockReturnValue({orgId:'org-a',linkId:'link-a',provider:'youtube',expiresAt:'2099-01-01'});
+  const available=await f.links.getAvailableIntegrations('youtube-token');
+  expect(available.map((item:any)=>item.identifier)).toEqual(['youtube']);
+  await expect(f.links.getOAuthUrl('youtube-token','x')).rejects.toMatchObject({status:403});
+  await expect(f.links.getOAuthUrl('youtube-token','youtube')).resolves.toMatchObject({url:expect.any(String)});
+  expect([...f.store.entries()].some(([key, value]) => key.startsWith('connect-scope:') && JSON.parse(value).providerScoped === true)).toBe(true);
+ });
+ it('lets a generic token use YouTube only after the global gate is enabled',async()=>{
+  const f=fixture();process.env.POSTIZ_YOUTUBE_OAUTH_ENABLED='true';
+  const available=await f.links.getAvailableIntegrations('generic-token');
+  expect(available.map((item:any)=>item.identifier)).toContain('youtube');
+  await expect(f.links.getOAuthUrl('generic-token','youtube')).resolves.toMatchObject({url:expect.any(String)});
+ });
  it('uses a first-party browser bootstrap and a state-scoped signed cookie',async()=>{
   const {links,store,response}=fixture();
   const result=await links.getOAuthUrl('token','linkedin-page','https://app.plumeza.io/connect/token');
@@ -135,6 +162,20 @@ describe('external OAuth contract',()=>{
   (AuthService as any).verifyJWT.mockReturnValueOnce({orgId:'org-a',linkId:'other-link',expiresAt:'2099-01-01'});
   await expect(f.links.result('other-token',saved.receipt)).rejects.toMatchObject({status:404});
  });
+ it('keeps the dashboard scope bound to the pending YouTube integration through page selection', async () => {
+  const f = fixture();
+  f.store.set('organization:youtube-state', 'org-a');
+  f.store.set('connect-context:youtube-state', JSON.stringify({ orgId: 'org-a', linkId: 'link-a', provider: 'youtube', providerScoped: true, returnURL: 'https://app.plumeza.io/connect/token' }));
+  f.store.set('connect-scope:youtube-state', JSON.stringify({ orgId: 'org-a', linkId: 'link-a', provider: 'youtube', providerScoped: true }));
+  f.integrations.getIntegrationById
+    .mockResolvedValueOnce({ id: 'pending-youtube', providerIdentifier: 'youtube', inBetweenSteps: true })
+    .mockResolvedValueOnce({ id: 'saved-youtube', providerIdentifier: 'youtube', inBetweenSteps: false });
+  const first = await (f.controller as any).connectOutcome('youtube-state', 'youtube', undefined, async () => ({ id: 'pending-youtube', inBetweenSteps: true }));
+  expect(first.returnURL).toBe('https://app.plumeza.io/connect/token');
+  expect(JSON.parse(f.store.get('connect-scope:youtube-state')!).pendingIntegrationId).toBe('pending-youtube');
+  const final = await (f.controller as any).connectOutcome('youtube-state', undefined, 'pending-youtube', async () => ({ id: 'saved-youtube' }));
+  expect(final.receipt).toMatch(/^[0-9a-f-]{36}$/);
+ });
  it('does not finalize a different attempt or issue a receipt for an unconfirmed page',async()=>{
   const f=fixture();f.store.set('connect-context:state',JSON.stringify({orgId:'org-a',linkId:'link-a',provider:'linkedin-page',pendingIntegrationId:'pending-a',returnURL:'https://app.plumeza.io/connect/token'}));f.store.set('organization:state','org-a');
   const work=jest.fn();await expect((f.controller as any).connectOutcome('state',undefined,'foreign-pending',work)).rejects.toMatchObject({status:400});expect(work).not.toHaveBeenCalled();
@@ -156,5 +197,39 @@ describe('external OAuth contract',()=>{
  });
  it('preserves explicit native success and never creates a branded receipt for it',async()=>{
   const f=fixture();expect(await (f.controller as any).connectOutcome('native-state','linkedin-page',undefined,async()=>({id:'native-id'}))).toEqual({id:'native-id',flow:'native'});
+ });
+});
+
+describe('native YouTube OAuth gate', () => {
+ const previous = process.env.POSTIZ_YOUTUBE_OAUTH_ENABLED;
+ afterEach(() => {
+  if (previous === undefined) delete process.env.POSTIZ_YOUTUBE_OAUTH_ENABLED;
+  else process.env.POSTIZ_YOUTUBE_OAUTH_ENABLED = previous;
+ });
+ it('blocks native YouTube OAuth unless globally enabled', () => {
+  delete process.env.POSTIZ_YOUTUBE_OAUTH_ENABLED;
+  expect(() => assertNativeYoutubeOAuthEnabled('YouTube')).toThrow(expect.objectContaining({ status: 403 }));
+ });
+ it('allows native YouTube OAuth after global enablement', () => {
+  process.env.POSTIZ_YOUTUBE_OAUTH_ENABLED = 'true';
+  expect(() => assertNativeYoutubeOAuthEnabled('youtube')).not.toThrow();
+ });
+ it('does not affect other native providers', () => {
+  delete process.env.POSTIZ_YOUTUBE_OAUTH_ENABLED;
+  expect(() => assertNativeYoutubeOAuthEnabled('x')).not.toThrow();
+ });
+ it('rejects in-flight native and generic YouTube callbacks while preserving scoped test links', () => {
+  delete process.env.POSTIZ_YOUTUBE_OAUTH_ENABLED;
+  expect(() => assertYoutubeOAuthCallbackEnabled('youtube')).toThrow(expect.objectContaining({ status: 403 }));
+  expect(() => assertYoutubeOAuthCallbackEnabled('youtube', { provider: 'youtube', providerScoped: false })).toThrow(expect.objectContaining({ status: 403 }));
+  expect(() => assertYoutubeOAuthCallbackEnabled('youtube', { provider: 'youtube', providerScoped: true })).not.toThrow();
+  expect(() => assertYoutubeOAuthCallbackEnabled('x')).not.toThrow();
+ });
+ it('rejects a different pending integration id for a raw scoped page-selection callback', async () => {
+  const f = fixture();
+  f.store.set('organization:state-a', 'org-a');
+  f.store.set('connect-scope:state-a', JSON.stringify({ orgId: 'org-a', linkId: 'link-a', provider: 'youtube', providerScoped: true, pendingIntegrationId: 'expected-id' }));
+  await expect(f.controller.saveProviderPage('other-id', { state: 'state-a' })).rejects.toMatchObject({ status: 400 });
+  expect(f.integrations.getIntegrationById).not.toHaveBeenCalled();
  });
 });
