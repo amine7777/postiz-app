@@ -82,9 +82,12 @@ describe('admin org lifecycle routes', () => {
     })),
   };
   const users = { getUserByEmail: jest.fn<(...args: any[]) => Promise<any>>() };
-  const controller = new AdminProvisionController(
-    organizations as any,
-    users as any
+  // Built untyped: other PRs add constructor arguments these routes never use.
+  const controller = new (AdminProvisionController as any)(
+    organizations,
+    users,
+    {},
+    {}
   );
 
   beforeEach(() => {
