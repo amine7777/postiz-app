@@ -61,6 +61,10 @@ export class OrganizationService {
     return this._organizationRepository.getOrgsByUserId(userId);
   }
 
+  setChannelLimits(orgId: string, channelLimits: Record<string, number> | null) {
+    return this._organizationRepository.setChannelLimits(orgId, channelLimits);
+  }
+
   updateApiKey(orgId: string) {
     return this._organizationRepository.updateApiKey(orgId);
   }

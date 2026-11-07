@@ -44,6 +44,8 @@ model Organization {
   oauthApp            OAuthApp[]
   oauthAuthorizations OAuthAuthorization[]
   providerCredentials ProviderCredential[]
+  /// Max active channels per provider identifier, e.g. {"youtube":2}. Null: no limit.
+  channelLimits       Json?
 
   @@index([apiKey])
   @@index([streakSince])
