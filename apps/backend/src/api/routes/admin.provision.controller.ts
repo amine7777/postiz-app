@@ -87,29 +87,37 @@ export class AdminProvisionController {
     }
   }
 
-  /** Saves the limits, then disables the newest active channels over them. */
+  /**
+   * Saves the limits, then disables the newest active channels over them and
+   * enables channels they had disabled once there is room again.
+   */
   private async applyLimits(orgId: string, value: unknown) {
     const limits = this.parseLimits(value);
     const saved = await this._organizationService.setChannelLimits(
       orgId,
       limits
     );
-    const disabledChannels = limits
-      ? await this._integrationService.disableChannelsOverLimit(orgId, limits)
-      : [];
-    return { channelLimits: saved.channelLimits ?? null, disabledChannels };
+    const { disabled, enabled } =
+      await this._integrationService.applyChannelLimits(orgId, limits);
+    return {
+      channelLimits: saved.channelLimits ?? null,
+      disabledChannels: disabled,
+      enabledChannels: enabled,
+    };
   }
 
   /**
    *   PATCH /provisioning/organizations/:id
    *   header: x-admin-token: <POSTIZ_ADMIN_TOKEN>
    *   body:   { channelLimits: { youtube: 2, x: 1 } | null }
-   *   -> { organizationId, channelLimits, disabledChannels }
+   *   -> { organizationId, channelLimits, disabledChannels, enabledChannels }
    *
    * Limits count active channels (not disabled, not deleted) per provider and
    * are enforced when a channel is connected, a page is selected or a channel
    * is enabled. Lowering a limit keeps the oldest channels and disables the
-   * rest. Providers without a limit, and orgs with null, are unlimited.
+   * rest (disabledByLimit); raising or removing it enables those again, oldest
+   * first. Channels the user disabled stay disabled. Providers without a
+   * limit, and orgs with null, are unlimited.
    */
   @Patch('/organizations/:id')
   async updateOrganization(

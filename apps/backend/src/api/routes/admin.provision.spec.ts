@@ -30,7 +30,7 @@ describe('admin provisioning: channel limits', () => {
     activateUser: jest.fn<(...args: any[]) => Promise<any>>(),
   };
   const integrations = {
-    disableChannelsOverLimit: jest.fn<(...args: any[]) => Promise<any>>(),
+    applyChannelLimits: jest.fn<(...args: any[]) => Promise<any>>(),
   };
   const manager = { getAllowedSocialsIntegrations: () => ['youtube', 'x'] };
   const controller = new AdminProvisionController(
@@ -48,7 +48,7 @@ describe('admin provisioning: channel limits', () => {
     organizations.setChannelLimits.mockImplementation(
       async (id: string, channelLimits: any) => ({ id, channelLimits })
     );
-    integrations.disableChannelsOverLimit.mockResolvedValue(['newest']);
+    integrations.applyChannelLimits.mockResolvedValue({ disabled: ['newest'], enabled: [] });
     users.getUserByEmail.mockResolvedValue(null);
     organizations.createOrgAndUser.mockResolvedValue({
       id: 'org-new',
@@ -78,22 +78,25 @@ describe('admin provisioning: channel limits', () => {
       organizationId: 'org-1',
       channelLimits: { youtube: 2, x: 1 },
       disabledChannels: ['newest'],
+      enabledChannels: [],
     });
-    expect(integrations.disableChannelsOverLimit).toHaveBeenCalledWith('org-1', {
+    expect(integrations.applyChannelLimits).toHaveBeenCalledWith('org-1', {
       youtube: 2,
       x: 1,
     });
   });
 
-  it('PATCH null clears the limits and disables nothing', async () => {
+  it('PATCH null clears the limits and gives back what they had paused', async () => {
+    integrations.applyChannelLimits.mockResolvedValue({ disabled: [], enabled: ['parked'] });
     await expect(
       controller.updateOrganization(token, 'org-1', { channelLimits: null })
     ).resolves.toEqual({
       organizationId: 'org-1',
       channelLimits: null,
       disabledChannels: [],
+      enabledChannels: ['parked'],
     });
-    expect(integrations.disableChannelsOverLimit).not.toHaveBeenCalled();
+    expect(integrations.applyChannelLimits).toHaveBeenCalledWith('org-1', null);
   });
 
   it('PATCH refuses bad limits and unknown orgs before any write', async () => {

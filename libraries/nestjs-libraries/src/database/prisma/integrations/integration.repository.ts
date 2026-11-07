@@ -48,31 +48,61 @@ export class IntegrationRepository {
     );
   }
 
-  /** Keeps the oldest active channels per provider, disables the rest. */
-  async disableChannelsOverLimit(org: string, limits: ChannelLimits) {
+  /**
+   * Brings the org's channels in line with its limits (null: no limits).
+   * Per limited provider the oldest active channels stay and the rest are
+   * disabled and marked disabledByLimit. Channels marked that way come back,
+   * oldest first, as soon as there is room again (limit raised or removed).
+   * A channel the user disabled is never enabled here.
+   */
+  async applyChannelLimits(org: string, limits: ChannelLimits | null) {
     const disabled: string[] = [];
-    for (const provider of Object.keys(limits)) {
-      const limit = channelLimitFor(limits, provider)!;
-      const extra = await this._integration.model.integration.findMany({
-        where: {
-          organizationId: org,
-          providerIdentifier: provider,
-          deletedAt: null,
-          inBetweenSteps: false,
-          disabled: false,
-        },
-        orderBy: [{ createdAt: 'asc' }, { id: 'asc' }],
-        skip: limit,
+    const enabled: string[] = [];
+    const live = { organizationId: org, deletedAt: null, inBetweenSteps: false };
+    const order = [{ createdAt: 'asc' as const }, { id: 'asc' as const }];
+    const providers = await this._integration.model.integration.findMany({
+      where: live,
+      select: { providerIdentifier: true },
+      distinct: ['providerIdentifier'],
+    });
+    for (const { providerIdentifier: provider } of providers) {
+      const limit = channelLimitFor(limits, provider);
+      const active = await this._integration.model.integration.findMany({
+        where: { ...live, providerIdentifier: provider, disabled: false },
+        orderBy: order,
         select: { id: true },
       });
-      if (!extra.length) continue;
-      await this._integration.model.integration.updateMany({
-        where: { organizationId: org, id: { in: extra.map((p) => p.id) } },
-        data: { disabled: true },
+      if (limit !== undefined && active.length > limit) {
+        const extra = active.slice(limit).map((p) => p.id);
+        await this._integration.model.integration.updateMany({
+          where: { organizationId: org, id: { in: extra } },
+          data: { disabled: true, disabledByLimit: true },
+        });
+        disabled.push(...extra);
+        continue;
+      }
+      const room = limit === undefined ? undefined : limit - active.length;
+      if (room === 0) continue;
+      const parked = await this._integration.model.integration.findMany({
+        where: {
+          ...live,
+          providerIdentifier: provider,
+          disabled: true,
+          disabledByLimit: true,
+        },
+        orderBy: order,
+        ...(room === undefined ? {} : { take: room }),
+        select: { id: true },
       });
-      disabled.push(...extra.map((p) => p.id));
+      if (!parked.length) continue;
+      const back = parked.map((p) => p.id);
+      await this._integration.model.integration.updateMany({
+        where: { organizationId: org, id: { in: back } },
+        data: { disabled: false, disabledByLimit: false },
+      });
+      enabled.push(...back);
     }
-    return disabled;
+    return { disabled, enabled };
   }
 
   getMentions(platform: string, q: string) {
@@ -275,6 +305,7 @@ export class IntegrationRepository {
           data: {
             ...params,
             disabled: false,
+            disabledByLimit: false,
             deletedAt: null,
             refreshNeeded: false,
           },
@@ -640,8 +671,10 @@ export class IntegrationRepository {
         id,
         organizationId: org,
       },
+      // The user's own choice: never re-enabled by a limit change.
       data: {
         disabled: true,
+        disabledByLimit: false,
       },
     });
   }
@@ -654,6 +687,7 @@ export class IntegrationRepository {
       },
       data: {
         disabled: false,
+        disabledByLimit: false,
       },
     });
   }

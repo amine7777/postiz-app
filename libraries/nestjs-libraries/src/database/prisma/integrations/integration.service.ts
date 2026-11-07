@@ -287,8 +287,8 @@ export class IntegrationService {
     return this._integrationRepository.deleteChannel(org, id);
   }
 
-  disableChannelsOverLimit(org: string, limits: ChannelLimits) {
-    return this._integrationRepository.disableChannelsOverLimit(org, limits);
+  applyChannelLimits(org: string, limits: ChannelLimits | null) {
+    return this._integrationRepository.applyChannelLimits(org, limits);
   }
 
   async disableIntegrations(org: string, totalChannels: number) {
