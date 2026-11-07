@@ -8,4 +8,9 @@ export class CreateConnectLinkDto {
   @IsNumber()
   @IsOptional()
   expiresInHours?: number;
+
+  /** Id of one of the org's channels: the link reconnects that channel. */
+  @IsString()
+  @IsOptional()
+  refresh?: string;
 }

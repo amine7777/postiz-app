@@ -236,6 +236,7 @@ export class PublicIntegrationsController {
         identifier: org.providerIdentifier,
         picture: org.picture,
         disabled: org.disabled,
+        refreshNeeded: org.refreshNeeded,
         profile: org.profile,
         customer: org.customer
           ? {
@@ -623,7 +624,26 @@ export class PublicIntegrationsController {
   ) {
     Sentry.metrics.count('public_api-request', 1);
     const hours = body.expiresInHours || 24;
-    const provider = body.provider?.trim().toLowerCase();
+    let provider = body.provider?.trim().toLowerCase();
+    // Reconnect: the link is locked to that channel's provider and account.
+    let refresh: string | undefined;
+    if (body.refresh) {
+      const channel = await this._integrationService.getIntegrationById(
+        org.id,
+        body.refresh
+      );
+      if (!channel || channel.deletedAt || channel.inBetweenSteps) {
+        throw new HttpException({ msg: 'Integration not found' }, 404);
+      }
+      if (provider && provider !== channel.providerIdentifier) {
+        throw new HttpException(
+          { msg: 'Provider does not match the channel to reconnect' },
+          400
+        );
+      }
+      provider = channel.providerIdentifier;
+      refresh = channel.internalId;
+    }
     const allowedProviders = this._integrationManager
       .getAllowedSocialsIntegrations()
       .map((integration) => integration.toLowerCase());
@@ -631,7 +651,7 @@ export class PublicIntegrationsController {
       throw new HttpException({ msg: 'Integration not allowed' }, 400);
     }
     const token = AuthService.signJWT(
-      connectLinkTokenPayload(org.id, makeId(10), dayjs().add(hours, 'hours').toISOString(), provider),
+      connectLinkTokenPayload(org.id, makeId(10), dayjs().add(hours, 'hours').toISOString(), provider, refresh),
     );
 
     return {

@@ -23,12 +23,14 @@ export class ConnectLinkController {
     orgId: string;
     linkId: string;
     provider?: string;
+    refresh?: string;
   } {
     try {
       const payload = AuthService.verifyJWT(token) as {
         orgId: string;
         linkId: string;
         provider?: string;
+        refresh?: string;
         expiresAt: string;
       };
 
@@ -44,6 +46,7 @@ export class ConnectLinkController {
         orgId: payload.orgId,
         linkId: payload.linkId,
         provider: payload.provider?.toLowerCase(),
+        ...(payload.refresh ? { refresh: String(payload.refresh) } : {}),
       };
     } catch (err) {
       if (err instanceof HttpException) throw err;
@@ -86,7 +89,7 @@ export class ConnectLinkController {
     // Omission explicitly retains the native Postiz connect-link flow.
     @Query('redirectUrl') redirectUrl?: string
   ) {
-    const { orgId, linkId, provider: linkProvider } = this.validateToken(token);
+    const { orgId, linkId, provider: linkProvider, refresh } = this.validateToken(token);
     const normalizedIntegration = integration.toLowerCase();
     if (linkProvider && normalizedIntegration !== linkProvider) {
       throw new HttpException({ msg: 'Integration not allowed for this link' }, 403);
@@ -159,6 +162,11 @@ export class ConnectLinkController {
     }
     await ioRedis.set(`organization:${state}`, orgId, 'EX', 3600);
     await ioRedis.set(`login:${state}`, codeVerifier, 'EX', 3600);
+    if (refresh) {
+      // Signed at link creation from the org's own channel. The callback only
+      // accepts the same platform account and updates that channel.
+      await ioRedis.set(`refresh:${state}`, refresh, 'EX', 3600);
+    }
     if (!returnURL) {
       await ioRedis.set(`redirect:${state}`, `${process.env.FRONTEND_URL}/connect/${token}?success=${integration}`, 'EX', 3600);
       return { url };

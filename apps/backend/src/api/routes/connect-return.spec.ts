@@ -232,4 +232,53 @@ describe('native YouTube OAuth gate', () => {
   await expect(f.controller.saveProviderPage('other-id', { state: 'state-a' })).rejects.toMatchObject({ status: 400 });
   expect(f.integrations.getIntegrationById).not.toHaveBeenCalled();
  });
+
+ describe('reconnect through a connect link',()=>{
+  const reconnectToken={orgId:'org-a',linkId:'link-a',provider:'youtube',refresh:'yt-account',expiresAt:'2099-01-01'};
+  const stateOf=(url:string)=>new URL(url).searchParams.get('state')!;
+  function reconnectFixture(accountId:string){
+   const f=fixture();
+   (AuthService as any).verifyJWT.mockReturnValue(reconnectToken);
+   const provider={
+    generateAuthUrl:async()=>({state:'original-state',codeVerifier:'verifier',url:'https://accounts.google.com/o?state=original-state'}),
+    authenticate:jest.fn(async()=>({id:accountId,accessToken:'new-token',refreshToken:'new-refresh',expiresIn:3600,name:'Channel',picture:'',username:'channel'})),
+   };
+   const manager={...f.manager,getSocialIntegration:()=>provider};
+   const integrations={
+    getIntegrationById:jest.fn(),
+    createOrUpdateIntegration:jest.fn(async():Promise<any>=>({id:'saved-id',inBetweenSteps:false})),
+    checkPreviousConnections:jest.fn(),
+   };
+   const orgs={getOrgById:async()=>({id:'org-a'})};
+   const links=new ConnectLinkController(manager as any,orgs as any,{getByOrgAndProvider:async():Promise<any>=>null} as any);
+   const controller=new NoAuthIntegrationsController(manager as any,integrations as any,{startRefreshWorkflow:jest.fn(async():Promise<any>=>true)} as any,orgs as any,{getByOrgAndProvider:async():Promise<any>=>null} as any);
+   return {...f,links,controller,integrations,provider};
+  }
+  it('signs the channel to reconnect into the link token',()=>{
+   expect(connectLinkTokenPayload('org-a','link-a','2099-01-01','youtube','yt-account')).toEqual(reconnectToken);
+  });
+  it('a reconnect link stores the account to refresh for the callback; a normal link does not',async()=>{
+   const f=reconnectFixture('yt-account');
+   const {url}=await f.links.getOAuthUrl('reconnect-token','youtube');
+   expect(f.store.get('refresh:'+stateOf(url))).toBe('yt-account');
+   (AuthService as any).verifyJWT.mockReturnValue({...reconnectToken,refresh:undefined});
+   const plain=await f.links.getOAuthUrl('plain-token','youtube');
+   expect(f.store.get('refresh:'+stateOf(plain.url))).toBeUndefined();
+  });
+  it('the callback updates that same YouTube channel, scoped to the link org',async()=>{
+   const f=reconnectFixture('yt-account');
+   const {url}=await f.links.getOAuthUrl('reconnect-token','youtube');
+   await expect(f.controller.connectSocialMedia('youtube',{state:stateOf(url),code:'code',timezone:'0'} as any)).resolves.toMatchObject({id:'saved-id',inBetweenSteps:false});
+   const args=f.integrations.createOrUpdateIntegration.mock.calls[0] as any[];
+   expect(args[2]).toBe('org-a');
+   expect(args[6]).toBe('yt-account');
+   expect(args[12]).toBe(false);
+  });
+  it('the callback refuses a different account and writes nothing',async()=>{
+   const f=reconnectFixture('someone-else');
+   const {url}=await f.links.getOAuthUrl('reconnect-token','youtube');
+   await expect(f.controller.connectSocialMedia('youtube',{state:stateOf(url),code:'code',timezone:'0'} as any)).rejects.toMatchObject({status:400});
+   expect(f.integrations.createOrUpdateIntegration).not.toHaveBeenCalled();
+  });
+ });
 });
