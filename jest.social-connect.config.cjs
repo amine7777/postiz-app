@@ -9,6 +9,9 @@ module.exports = {
     '<rootDir>/libraries/nestjs-libraries/src/database/prisma/integrations/integration.repository.spec.ts',
     '<rootDir>/libraries/nestjs-libraries/src/database/prisma/integrations/integration.connection.integration.spec.ts',
     '<rootDir>/libraries/nestjs-libraries/src/integrations/social/linkedin.page.provider.spec.ts',
+    '<rootDir>/libraries/nestjs-libraries/src/integrations/social/youtube.redirect.spec.ts',
+    '<rootDir>/apps/backend/src/public-api/routes/v1/public.provider-credentials.spec.ts',
+    '<rootDir>/libraries/nestjs-libraries/src/database/prisma/provider-credentials/provider-credential.repository.spec.ts',
   ],
   moduleNameMapper: {
     '^@gitroom/backend/(.*)$': '<rootDir>/apps/backend/src/$1',

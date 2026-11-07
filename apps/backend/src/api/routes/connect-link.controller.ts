@@ -129,7 +129,7 @@ export class ConnectLinkController {
       integration
     );
     const clientInfo = orgCreds
-      ? { client_id: orgCreds.clientId, client_secret: orgCreds.clientSecret, instanceUrl: '' }
+      ? { client_id: orgCreds.clientId, client_secret: orgCreds.clientSecret, instanceUrl: '', ...(orgCreds.redirectUrl ? { redirect_uri: orgCreds.redirectUrl } : {}) }
       : undefined;
 
     const generated = await integrationProvider.generateAuthUrl(clientInfo);

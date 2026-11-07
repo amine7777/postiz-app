@@ -62,6 +62,7 @@ import { ProviderCredentialService } from '@gitroom/nestjs-libraries/database/pr
 import { InjectTokenDto } from '@gitroom/nestjs-libraries/dtos/integrations/inject-token.dto';
 import { UpsertProviderCredentialDto } from '@gitroom/nestjs-libraries/dtos/integrations/upsert-provider-credential.dto';
 import { CreateConnectLinkDto } from '@gitroom/nestjs-libraries/dtos/integrations/create-connect-link.dto';
+import { assertRedirectUrl } from '@gitroom/nestjs-libraries/integrations/social/social.integrations.interface';
 import { connectLinkTokenPayload } from '../../connect-link-token';
 import { AuthService } from '@gitroom/helpers/auth/auth.service';
 import { makeId } from '@gitroom/nestjs-libraries/services/make.is';
@@ -281,7 +282,7 @@ export class PublicIntegrationsController {
         integration
       );
       const clientInfo = orgCreds
-        ? { client_id: orgCreds.clientId, client_secret: orgCreds.clientSecret, instanceUrl: '' }
+        ? { client_id: orgCreds.clientId, client_secret: orgCreds.clientSecret, instanceUrl: '', ...(orgCreds.redirectUrl ? { redirect_uri: orgCreds.redirectUrl } : {}) }
         : undefined;
 
       const { codeVerifier, state, url } =
@@ -589,11 +590,21 @@ export class PublicIntegrationsController {
       throw new HttpException({ msg: 'Invalid provider' }, 400);
     }
 
+    let redirectUrl: string | undefined;
+    if (body.redirectUrl) {
+      try {
+        redirectUrl = assertRedirectUrl(body.redirectUrl);
+      } catch (err) {
+        throw new HttpException({ msg: (err as Error).message }, 400);
+      }
+    }
+
     await this._providerCredentialService.upsert(
       org.id,
       provider,
       body.clientId,
-      body.clientSecret
+      body.clientSecret,
+      redirectUrl
     );
 
     return { provider, status: 'saved' };

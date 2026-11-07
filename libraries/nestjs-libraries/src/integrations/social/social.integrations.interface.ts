@@ -4,6 +4,28 @@ export interface ClientInformation {
   client_id: string;
   client_secret: string;
   instanceUrl: string;
+  /** The org app's own OAuth redirect URI, when set (YouTube). */
+  redirect_uri?: string;
+}
+
+/** https, no credentials, query or hash: a valid app redirect URI, or throws. */
+export function assertRedirectUrl(value: string): string {
+  let url: URL;
+  try {
+    url = new URL(value);
+  } catch {
+    throw new Error('redirectUrl must be an absolute URL');
+  }
+  if (
+    url.protocol !== 'https:' ||
+    url.username ||
+    url.password ||
+    url.search ||
+    url.hash
+  ) {
+    throw new Error('redirectUrl must be https, without credentials, query or hash');
+  }
+  return url.toString();
 }
 export interface IAuthenticator {
   authenticate(

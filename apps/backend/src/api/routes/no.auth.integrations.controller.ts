@@ -117,7 +117,7 @@ export class NoAuthIntegrationsController {
     const clientInfo = details
       ? JSON.parse(details)
       : orgCreds
-        ? { client_id: orgCreds.clientId, client_secret: orgCreds.clientSecret, instanceUrl: '' }
+        ? { client_id: orgCreds.clientId, client_secret: orgCreds.clientSecret, instanceUrl: '', ...(orgCreds.redirectUrl ? { redirect_uri: orgCreds.redirectUrl } : {}) }
         : undefined;
 
     const {

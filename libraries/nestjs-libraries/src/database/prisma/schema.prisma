@@ -662,6 +662,8 @@ model ProviderCredential {
   provider       String
   clientId       String
   clientSecret   String
+  /// Optional OAuth redirect URI of this org's app (YouTube today). Null: the host's own.
+  redirectUrl    String?
   createdAt      DateTime     @default(now())
   updatedAt      DateTime     @updatedAt
   deletedAt      DateTime?
