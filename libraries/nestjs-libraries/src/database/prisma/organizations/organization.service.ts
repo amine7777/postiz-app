@@ -61,6 +61,14 @@ export class OrganizationService {
     return this._organizationRepository.getOrgsByUserId(userId);
   }
 
+  setDisabled(orgId: string, disabled: boolean) {
+    return this._organizationRepository.setDisabled(orgId, disabled);
+  }
+
+  deleteOrganization(orgId: string) {
+    return this._organizationRepository.deleteOrganization(orgId);
+  }
+
   updateApiKey(orgId: string) {
     return this._organizationRepository.updateApiKey(orgId);
   }

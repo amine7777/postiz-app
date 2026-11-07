@@ -1,4 +1,7 @@
-import { PrismaRepository } from '@gitroom/nestjs-libraries/database/prisma/prisma.service';
+import {
+  PrismaRepository,
+  PrismaTransaction,
+} from '@gitroom/nestjs-libraries/database/prisma/prisma.service';
 import { Role, ShortLinkPreference, SubscriptionTier } from '@prisma/client';
 import { Injectable } from '@nestjs/common';
 import { AuthService } from '@gitroom/helpers/auth/auth.service';
@@ -10,8 +13,55 @@ export class OrganizationRepository {
   constructor(
     private _organization: PrismaRepository<'organization'>,
     private _userOrg: PrismaRepository<'userOrganization'>,
-    private _user: PrismaRepository<'user'>
+    private _user: PrismaRepository<'user'>,
+    private _transaction: PrismaTransaction
   ) {}
+
+  setDisabled(orgId: string, disabled: boolean) {
+    return this._organization.model.organization.update({
+      where: { id: orgId },
+      data: { disabledAt: disabled ? new Date() : null },
+      select: { id: true, disabledAt: true },
+    });
+  }
+
+  /**
+   * Irreversible: revokes the API key and OAuth tokens, removes every channel
+   * and wipes its tokens, and drops posts that were not published. Published
+   * posts, users and the org row stay for history.
+   */
+  deleteOrganization(orgId: string) {
+    const now = new Date();
+    return this._transaction.model.$transaction(async (tx) => {
+      await tx.organization.update({
+        where: { id: orgId },
+        data: { apiKey: null, disabledAt: now, deletedAt: now },
+      });
+      await tx.oAuthAuthorization.updateMany({
+        where: { organizationId: orgId, revokedAt: null },
+        data: { revokedAt: now, accessToken: null, authorizationCode: null },
+      });
+      const channels = await tx.integration.updateMany({
+        where: { organizationId: orgId, deletedAt: null },
+        data: {
+          deletedAt: now,
+          disabled: true,
+          token: '',
+          refreshToken: null,
+          tokenExpiration: null,
+        },
+      });
+      const posts = await tx.post.updateMany({
+        where: {
+          organizationId: orgId,
+          deletedAt: null,
+          state: { in: ['QUEUE', 'DRAFT'] },
+        },
+        data: { deletedAt: now },
+      });
+      return { channels: channels.count, posts: posts.count };
+    });
+  }
 
   createMaxUser(id: string, name: string, saasName: string, email: string) {
     return this._organization.model.organization.create({

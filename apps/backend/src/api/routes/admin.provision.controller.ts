@@ -1,7 +1,12 @@
 import {
   Body,
+  ConflictException,
   Controller,
+  Delete,
   Headers,
+  HttpCode,
+  NotFoundException,
+  Param,
   Post,
   UnauthorizedException,
 } from '@nestjs/common';
@@ -49,15 +54,83 @@ export class AdminProvisionController {
     private _usersService: UsersService
   ) {}
 
+  private assertAdmin(adminToken: string) {
+    const expected = process.env.POSTIZ_ADMIN_TOKEN;
+    if (!expected || !adminToken || adminToken !== expected) {
+      throw new UnauthorizedException('Invalid admin token');
+    }
+  }
+
+  /** The org, or 404; 409 once it was deleted. */
+  private async liveOrg(adminToken: string, id: string) {
+    this.assertAdmin(adminToken);
+    const org = await this._organizationService.getOrgById(id);
+    if (!org) throw new NotFoundException('Organization not found');
+    if (org.deletedAt) throw new ConflictException('Organization was deleted');
+    return org;
+  }
+
+  /**
+   * Admin lifecycle, all gated by x-admin-token:
+   *
+   *   POST   /provisioning/organizations/:id/disable         -> { organizationId, disabled: true }
+   *   POST   /provisioning/organizations/:id/enable          -> { organizationId, disabled: false }
+   *   POST   /provisioning/organizations/:id/rotate-api-key  -> { organizationId, apiKey }
+   *   DELETE /provisioning/organizations/:id                 -> { organizationId, deleted: true, channels, posts }
+   *
+   * Disabled: the API key and OAuth tokens get 403, connect links get 403,
+   * scheduled posts are not published. Channels and posts are kept, so enable
+   * restores everything. Delete is irreversible (see deleteOrganization).
+   */
+  @Post('/organizations/:id/disable')
+  @HttpCode(200)
+  async disableOrganization(
+    @Headers('x-admin-token') adminToken: string,
+    @Param('id') id: string
+  ) {
+    await this.liveOrg(adminToken, id);
+    await this._organizationService.setDisabled(id, true);
+    return { organizationId: id, disabled: true };
+  }
+
+  @Post('/organizations/:id/enable')
+  @HttpCode(200)
+  async enableOrganization(
+    @Headers('x-admin-token') adminToken: string,
+    @Param('id') id: string
+  ) {
+    await this.liveOrg(adminToken, id);
+    await this._organizationService.setDisabled(id, false);
+    return { organizationId: id, disabled: false };
+  }
+
+  @Post('/organizations/:id/rotate-api-key')
+  @HttpCode(200)
+  async rotateApiKey(
+    @Headers('x-admin-token') adminToken: string,
+    @Param('id') id: string
+  ) {
+    await this.liveOrg(adminToken, id);
+    const updated = await this._organizationService.updateApiKey(id);
+    return { organizationId: id, apiKey: updated.apiKey };
+  }
+
+  @Delete('/organizations/:id')
+  async deleteOrganization(
+    @Headers('x-admin-token') adminToken: string,
+    @Param('id') id: string
+  ) {
+    await this.liveOrg(adminToken, id);
+    const removed = await this._organizationService.deleteOrganization(id);
+    return { organizationId: id, deleted: true, ...removed };
+  }
+
   @Post('/organizations')
   async createOrganization(
     @Headers('x-admin-token') adminToken: string,
     @Body() body: ProvisionOrgDto
   ) {
-    const expected = process.env.POSTIZ_ADMIN_TOKEN;
-    if (!expected || !adminToken || adminToken !== expected) {
-      throw new UnauthorizedException('Invalid admin token');
-    }
+    this.assertAdmin(adminToken);
 
     // Idempotent: a LOCAL user with this email may already exist (client
     // provisioned before, or a Cloudeefly account deleted & re-created). Return
@@ -73,6 +146,10 @@ export class AdminProvisionController {
         const fullExisting = await this._organizationService.getOrgById(
           existingOrg.id
         );
+        if (fullExisting?.deletedAt) {
+          // Its key is revoked; returning it would hand back a dead org.
+          throw new ConflictException('Organization was deleted');
+        }
         return {
           organizationId: existingOrg.id,
           userId: existingUser.id,

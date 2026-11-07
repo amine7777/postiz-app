@@ -59,6 +59,9 @@ export class ConnectLinkController {
     if (!org) {
       throw new HttpException({ msg: 'Organization not found' }, 404);
     }
+    if (org.disabledAt) {
+      throw new HttpException({ msg: 'Organization disabled' }, 403);
+    }
 
     const integrations = await this._integrationManager.getAllIntegrations();
 
@@ -104,6 +107,9 @@ export class ConnectLinkController {
     const org = await this._organizationService.getOrgById(orgId);
     if (!org) {
       throw new HttpException({ msg: 'Organization not found' }, 404);
+    }
+    if (org.disabledAt) {
+      throw new HttpException({ msg: 'Organization disabled' }, 403);
     }
 
     if (

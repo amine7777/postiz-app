@@ -44,6 +44,10 @@ model Organization {
   oauthApp            OAuthApp[]
   oauthAuthorizations OAuthAuthorization[]
   providerCredentials ProviderCredential[]
+  /// Set by admin deprovisioning: no API, connect links or posting while set.
+  disabledAt          DateTime?
+  /// Set by admin deletion (irreversible); disabledAt is set too.
+  deletedAt           DateTime?
 
   @@index([apiKey])
   @@index([streakSince])
