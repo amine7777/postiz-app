@@ -66,6 +66,7 @@ import { connectLinkTokenPayload } from '../../connect-link-token';
 import { AuthService } from '@gitroom/helpers/auth/auth.service';
 import { makeId } from '@gitroom/nestjs-libraries/services/make.is';
 import dayjs from 'dayjs';
+import { pricing } from '@gitroom/nestjs-libraries/database/prisma/subscriptions/pricing';
 
 @ApiTags('Public API')
 @Controller('/public/v1')
@@ -348,6 +349,47 @@ export class PublicIntegrationsController {
     }
 
     return this._integrationService.deleteChannel(org.id, id);
+  }
+
+  private async ownChannel(orgId: string, id: string) {
+    const channel = await this._integrationService.getIntegrationById(orgId, id);
+    if (!channel || channel.deletedAt || channel.inBetweenSteps) {
+      throw new HttpException({ msg: 'Integration not found' }, 404);
+    }
+    return channel;
+  }
+
+  @Post('/integrations/:id/disable')
+  async disableChannel(
+    @GetOrgFromRequest() org: Organization,
+    @Param('id') id: string
+  ) {
+    Sentry.metrics.count('public_api-request', 1);
+    await this.ownChannel(org.id, id);
+    await this._integrationService.disableChannel(org.id, id);
+    return { id, disabled: true };
+  }
+
+  @Post('/integrations/:id/enable')
+  async enableChannel(
+    @GetOrgFromRequest() org: Organization,
+    @Param('id') id: string
+  ) {
+    Sentry.metrics.count('public_api-request', 1);
+    await this.ownChannel(org.id, id);
+    try {
+      await this._integrationService.enableChannel(
+        org.id,
+        // Same channel allowance as the web route (only used with Stripe).
+        // @ts-ignore
+        org?.subscription?.totalChannels || pricing.FREE.channel,
+        id
+      );
+    } catch (err) {
+      if (err instanceof HttpException) throw err;
+      throw new HttpException({ msg: (err as Error).message }, 403);
+    }
+    return { id, disabled: false };
   }
 
   @Get('/integration-settings/:id')
