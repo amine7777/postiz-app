@@ -58,7 +58,7 @@ export class IntegrationRepository {
   async applyChannelLimits(org: string, limits: ChannelLimits | null) {
     const disabled: string[] = [];
     const enabled: string[] = [];
-    const live = { organizationId: org, deletedAt: null, inBetweenSteps: false };
+    const live = { organizationId: org, deletedAt: null as Date | null, inBetweenSteps: false };
     const order = [{ createdAt: 'asc' as const }, { id: 'asc' as const }];
     const providers = await this._integration.model.integration.findMany({
       where: live,

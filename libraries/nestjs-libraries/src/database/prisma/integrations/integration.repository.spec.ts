@@ -113,6 +113,7 @@ describe('page selection persistence', () => {
       data: {
         ...params,
         disabled: false,
+        disabledByLimit: false,
         deletedAt: null,
         refreshNeeded: false,
       },
@@ -130,6 +131,7 @@ describe('page selection persistence', () => {
       data: {
         ...params,
         disabled: false,
+        disabledByLimit: false,
         deletedAt: null,
         refreshNeeded: false,
       },
