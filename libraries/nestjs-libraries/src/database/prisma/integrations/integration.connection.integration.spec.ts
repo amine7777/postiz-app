@@ -471,4 +471,43 @@ integrationTests('page connection against PostgreSQL', () => {
       await db.integration.findUnique({ where: { id: pending.id } })
     ).toEqual(pending);
   });
+
+  describe('deleting a channel', () => {
+    it('wipes its tokens, keeps its posts, and leaves other orgs alone', async () => {
+      const a = await page('A');
+      const history = await posts(a.id);
+      const foreign = await page('F', foreignOrg);
+
+      await service.deleteChannel(org, a.id);
+
+      const deleted = await db.integration.findUniqueOrThrow({ where: { id: a.id } });
+      expect(deleted.deletedAt).toBeInstanceOf(Date);
+      expect(deleted).toMatchObject({ token: '', refreshToken: null, tokenExpiration: null });
+      await assertPostsUnchanged(history);
+      expect(await db.integration.findUnique({ where: { id: foreign.id } })).toEqual(foreign);
+      await expect(service.deleteChannel(org, foreign.id)).rejects.toThrow();
+      expect(await db.integration.findUnique({ where: { id: foreign.id } })).toEqual(foreign);
+    });
+
+    it('connecting the same account again brings it back with fresh tokens', async () => {
+      const a = await page('A');
+      await service.deleteChannel(org, a.id);
+      await repository.createOrUpdateIntegration(
+        undefined,
+        false,
+        org,
+        'A',
+        undefined,
+        'social',
+        'A',
+        'linkedin-page',
+        'fresh-token',
+        'fresh-refresh',
+        3600
+      );
+      expect(
+        await db.integration.findUniqueOrThrow({ where: { id: a.id } })
+      ).toMatchObject({ deletedAt: null, token: 'fresh-token', refreshToken: 'fresh-refresh' });
+    });
+  });
 });

@@ -609,8 +609,13 @@ export class IntegrationRepository {
         id,
         organizationId: org,
       },
+      // The row stays for post history; the social account's tokens do not.
+      // Connecting the account again stores fresh ones.
       data: {
         deletedAt: new Date(),
+        token: '',
+        refreshToken: null,
+        tokenExpiration: null,
       },
     });
   }
