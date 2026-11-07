@@ -416,7 +416,11 @@ export class NoAuthIntegrationsController {
           scopedContext.pendingIntegrationId = result.id;
           await ioRedis.set(`connect-scope:${state}`, JSON.stringify(scopedContext), 'EX', 3600);
         }
-        return { ...result, flow: 'external', returnURL: context.returnURL };
+        // pickInApp: the caller picks the page; page details (which carry page
+        // tokens for some providers) never reach the browser.
+        return context.pickInApp
+          ? { ...result, pages: [], flow: 'external', returnURL: context.returnURL, pickInApp: true }
+          : { ...result, flow: 'external', returnURL: context.returnURL };
       }
       const saved = await this._integrationService.getIntegrationById(context.orgId, result.id);
       if (!saved || saved.deletedAt || saved.inBetweenSteps || saved.providerIdentifier !== context.provider) throw new Error('Unconfirmed integration');

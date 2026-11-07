@@ -17,6 +17,7 @@ module.exports = {
     '<rootDir>/libraries/nestjs-libraries/src/database/prisma/organizations/organization.lifecycle.integration.spec.ts',
     '<rootDir>/apps/backend/src/public-api/routes/v1/public.integrations.channel-state.spec.ts',
     '<rootDir>/libraries/nestjs-libraries/src/database/prisma/integrations/channel-limits.spec.ts',
+    '<rootDir>/apps/backend/src/public-api/routes/v1/public.pick-page.spec.ts',
     '<rootDir>/apps/backend/src/api/routes/admin.provision.spec.ts',
     '<rootDir>/libraries/nestjs-libraries/src/integrations/social/x.provider.spec.ts',
     '<rootDir>/libraries/nestjs-libraries/src/integrations/social/instagram.analytics.spec.ts',

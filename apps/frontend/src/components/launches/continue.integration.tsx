@@ -146,7 +146,7 @@ export const ContinueIntegration: FC<{
         pages,
         returnURL,
         extensionToken,
-        receipt, flow,
+        receipt, flow, pickInApp,
       } = data;
       const onboarding = resOnboarding || searchParams.onboarding === 'true';
 
@@ -172,6 +172,18 @@ export const ContinueIntegration: FC<{
         } catch {
           // Silently ignore — extension may not be available
         }
+      }
+
+      // The product picks the page itself: hand the pending channel back.
+      const pickBack: string | undefined = brandedReturnURL || returnURL;
+      if (inBetweenSteps && !searchParams.refresh && pickInApp && pickBack) {
+        const destination = new URL(pickBack, window.location.origin);
+        ['success', 'added', 'msg', 'status', 'receipt', 'code', 'requestId', 'onboarding'].forEach(key => destination.searchParams.delete(key));
+        destination.searchParams.set('status', 'select_page');
+        destination.searchParams.set('provider', provider);
+        destination.searchParams.set('integration', String(id));
+        push(destination.toString());
+        return;
       }
 
       // If it's a two-step provider, show the selection UI inline

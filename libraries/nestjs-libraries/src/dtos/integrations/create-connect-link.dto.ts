@@ -1,4 +1,4 @@
-import { IsNumber, IsOptional, IsString } from 'class-validator';
+import { IsBoolean, IsNumber, IsOptional, IsString } from 'class-validator';
 
 export class CreateConnectLinkDto {
   @IsString()
@@ -13,4 +13,9 @@ export class CreateConnectLinkDto {
   @IsString()
   @IsOptional()
   refresh?: string;
+
+  /** Return the pending page-selection step to the calling application. */
+  @IsBoolean()
+  @IsOptional()
+  pickInApp?: boolean;
 }

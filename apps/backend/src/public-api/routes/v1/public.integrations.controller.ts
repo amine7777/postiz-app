@@ -395,6 +395,70 @@ export class PublicIntegrationsController {
     return { id, disabled: false };
   }
 
+  // A pending page draft of this org, and the provider's pages for it.
+  private async pendingPages(orgId: string, id: string) {
+    const pending = await this._integrationService.getIntegrationById(orgId, id);
+    if (!pending || pending.deletedAt || !pending.inBetweenSteps) {
+      throw new HttpException({ msg: 'Pending channel not found' }, 404);
+    }
+    const provider: any = this._integrationManager.getSocialIntegration(
+      pending.providerIdentifier
+    );
+    const method =
+      provider && 'pages' in provider
+        ? 'pages'
+        : provider && 'companies' in provider
+        ? 'companies'
+        : null;
+    if (!method || !provider.fetchPageInformation) {
+      throw new HttpException({ msg: 'This channel has no page to choose' }, 400);
+    }
+    let items: any[];
+    try {
+      items = (await provider[method](pending.token)) || [];
+    } catch {
+      throw new HttpException({ msg: 'Could not load the pages' }, 502);
+    }
+    return items.filter((p) => p && p.id != null);
+  }
+
+  /** The caller receives display fields only; page access tokens stay server-side. */
+  @Get('/integrations/:id/pages')
+  async listPendingPages(
+    @GetOrgFromRequest() org: Organization,
+    @Param('id') id: string
+  ) {
+    Sentry.metrics.count('public_api-request', 1);
+    return (await this.pendingPages(org.id, id)).map((p) => ({
+      id: String(p.id),
+      name: p.name || '',
+      username: p.username || null,
+      picture:
+        p.picture?.data?.url ||
+        p.picture?.url ||
+        (typeof p.picture === 'string' ? p.picture : null),
+    }));
+  }
+
+  @Post('/integrations/:id/page')
+  async choosePendingPage(
+    @GetOrgFromRequest() org: Organization,
+    @Param('id') id: string,
+    @Body('page') page: string
+  ) {
+    Sentry.metrics.count('public_api-request', 1);
+    const item = (await this.pendingPages(org.id, id)).find(
+      (p) => String(p.id) === String(page)
+    );
+    if (!item) {
+      throw new HttpException({ msg: 'Page not found' }, 404);
+    }
+    return this._integrationService.saveProviderPage(org.id, id, {
+      ...item,
+      page: String(item.id),
+    });
+  }
+
   @Get('/integration-settings/:id')
   async getIntegrationSettings(
     @GetOrgFromRequest() org: Organization,
@@ -704,9 +768,16 @@ export class PublicIntegrationsController {
     if (provider && !allowedProviders.includes(provider)) {
       throw new HttpException({ msg: 'Integration not allowed' }, 400);
     }
-    const token = AuthService.signJWT(
-      connectLinkTokenPayload(org.id, makeId(10), dayjs().add(hours, 'hours').toISOString(), provider, refresh),
-    );
+    const token = AuthService.signJWT({
+      ...connectLinkTokenPayload(
+        org.id,
+        makeId(10),
+        dayjs().add(hours, 'hours').toISOString(),
+        provider,
+        refresh
+      ),
+      ...(body.pickInApp ? { pickInApp: true } : {}),
+    });
 
     return {
       token,

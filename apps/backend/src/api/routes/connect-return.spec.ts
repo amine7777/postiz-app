@@ -360,4 +360,29 @@ describe('connect bootstrap error paths', () => {
   await expect(f.links.start('gone', f.response as any)).rejects.toMatchObject({ status: 410 });
   await expect(f.links.getOAuthUrl('token', 'linkedin-page', `${ONE}/connect/token`)).rejects.toMatchObject({ status: 400 });
  });
+
+ describe('pick the page in the calling app',()=>{
+  it('a pickInApp link puts it in the return context',async()=>{
+   const f=fixture();
+   (AuthService as any).verifyJWT.mockReturnValue({orgId:'org-a',linkId:'link-a',provider:'linkedin-page',pickInApp:true,expiresAt:'2099-01-01'});
+   await f.links.getOAuthUrl('pick-token','linkedin-page','https://app.plumeza.io/connect/token');
+   const [,raw]=[...f.store.entries()].find(([k])=>k.startsWith('connect-context:'))!;
+   expect(JSON.parse(raw)).toMatchObject({pickInApp:true,provider:'linkedin-page'});
+  });
+  it('the consent answers pickInApp with no page details for the browser',async()=>{
+   const f=fixture();
+   const context={orgId:'org-a',linkId:'link-a',provider:'linkedin-page',returnURL:'https://app.plumeza.io/connect/token',pickInApp:true};
+   f.store.set('connect-context:state',JSON.stringify(context));f.store.set('organization:state','org-a');
+   const out=await (f.controller as any).connectOutcome('state','linkedin-page',undefined,async()=>({id:'pending-a',inBetweenSteps:true,pages:[{id:'p1',access_token:'page-secret'}]}));
+   expect(out).toMatchObject({id:'pending-a',inBetweenSteps:true,pickInApp:true,flow:'external',pages:[]});
+   expect(JSON.stringify(out)).not.toContain('page-secret');
+  });
+  it('without pickInApp the picker data is unchanged',async()=>{
+   const f=fixture();
+   const context={orgId:'org-a',linkId:'link-a',provider:'linkedin-page',returnURL:'https://app.plumeza.io/connect/token'};
+   f.store.set('connect-context:state',JSON.stringify(context));f.store.set('organization:state','org-a');
+   const out=await (f.controller as any).connectOutcome('state','linkedin-page',undefined,async()=>({id:'pending-a',inBetweenSteps:true,pages:[{id:'p1'}]}));
+   expect(out.pages).toEqual([{id:'p1'}]);expect(out).not.toHaveProperty('pickInApp');
+  });
+ });
 });

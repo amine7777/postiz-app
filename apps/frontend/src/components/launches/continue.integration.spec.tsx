@@ -111,6 +111,18 @@ describe('branded OAuth outcomes',()=>{
  it('does not claim success without a server receipt',async()=>{
   await showSelection();mockFetch.mockResolvedValueOnce(response(201,{flow:'external',id:'saved'}));fireEvent.click(screen.getByRole('button',{name:'Save'}));await waitFor(()=>expect(mockPush).toHaveBeenCalled());expect(new URL(mockPush.mock.calls[0][0]).searchParams.get('code')).toBe('RESULT_MISSING');
  });
+ it('pickInApp: returns the pending channel to the app instead of showing the picker',async()=>{
+  mockFetch.mockResolvedValueOnce(response(201,{...selection,pickInApp:true}));
+  render(<ContinueIntegration {...props}/>);
+  await waitFor(()=>expect(mockPush).toHaveBeenCalled());
+  const url=new URL(mockPush.mock.calls[0][0]);
+  expect(url.origin+url.pathname).toBe(returnURL);
+  expect(url.searchParams.get('status')).toBe('select_page');
+  expect(url.searchParams.get('provider')).toBe('linkedin-page');
+  expect(url.searchParams.get('integration')).toBe('pending-integration');
+  expect(screen.queryByRole('button',{name:'Save'})).toBeNull();
+  expect(mockFetch).toHaveBeenCalledTimes(1);
+ });
  it('allows an explicitly native successful connection to retain Postiz navigation',async()=>{
   mockFetch.mockResolvedValueOnce(response(201,{id:'saved',flow:'native',inBetweenSteps:false}));render(<ContinueIntegration provider="linkedin-page" searchParams={callback} logged/>);await waitFor(()=>expect(mockPush).toHaveBeenCalled());expect(mockPush.mock.calls[0][0]).toMatch(/^\/launches\?/);
  });
