@@ -59,8 +59,28 @@ describe('allowed return origins', () => {
     expect(connectOrigin()).toBeUndefined();
     expect(() => safeConnectReturn(at('https://app-one.example.com'))).toThrow();
   });
-  it.each(['https://app-one.example.com,ftp://app-two.example.com', 'https://app-one.example.com,http://app-two.example.com', 'https://app-one.example.com,https://app-two.example.com/path', 'https://app-one.example.com,not a url'])('rejects a list with an invalid entry %s', value => {
-    process.env.CONNECT_RETURN_ORIGIN = value;
-    expect(() => connectOrigins()).toThrow();
+  it.each(['ftp://bad.example.com', 'http://bad.example.com', 'https://bad.example.com/path', 'not a url'])('skips the invalid entry %s and keeps the valid ones', bad => {
+    const warn = jest.spyOn(console, 'warn').mockImplementation(() => undefined);
+    process.env.CONNECT_RETURN_ORIGIN = `https://app-one.example.com,${bad},https://app-two.example.com`;
+    expect(connectOrigins()).toEqual(['https://app-one.example.com', 'https://app-two.example.com']);
+    expect(safeConnectReturn(at('https://app-two.example.com'))).toBe(at('https://app-two.example.com'));
+    expect(warn).toHaveBeenCalledWith(expect.stringContaining(bad));
+    warn.mockRestore();
+  });
+  it('warns once per invalid entry, not on every request', () => {
+    const warn = jest.spyOn(console, 'warn').mockImplementation(() => undefined);
+    process.env.CONNECT_RETURN_ORIGIN = 'https://app-one.example.com,https://once.example.com/x';
+    connectOrigins(); connectOrigins(); connectOrigins();
+    expect(warn).toHaveBeenCalledTimes(1);
+    warn.mockRestore();
+  });
+  it('fails only when no valid origin remains', () => {
+    const warn = jest.spyOn(console, 'warn').mockImplementation(() => undefined);
+    process.env.CONNECT_RETURN_ORIGIN = 'ftp://none-a.example.com, not a url';
+    expect(() => connectOrigins()).toThrow('Invalid connect return origin');
+    expect(() => safeConnectReturn(at('https://app-one.example.com'))).toThrow();
+    // The fallback used by error pages never throws.
+    expect(connectOrigin()).toBeUndefined();
+    warn.mockRestore();
   });
 });

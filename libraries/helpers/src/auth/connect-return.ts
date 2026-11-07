@@ -1,18 +1,34 @@
 import { createHash, createHmac, timingSafeEqual } from 'node:crypto';
 
 export const RETURN_TTL = 24 * 60 * 60;
-// CONNECT_RETURN_ORIGIN is a comma-separated list of allowed return origins.
-export function connectOrigins(): string[] {
-  return (process.env.CONNECT_RETURN_ORIGIN || '').split(',').map((entry) => entry.trim()).filter(Boolean).map((raw) => {
+function parseOrigin(raw: string): string | undefined {
+  try {
     const url = new URL(raw);
-    if (url.protocol !== 'https:' && !(url.protocol === 'http:' && ['localhost', '127.0.0.1'].includes(url.hostname))) throw new Error('Invalid connect return origin');
-    if (url.username || url.password || url.pathname !== '/' || url.search || url.hash) throw new Error('Invalid connect return origin');
+    if (url.protocol !== 'https:' && !(url.protocol === 'http:' && ['localhost', '127.0.0.1'].includes(url.hostname))) return undefined;
+    if (url.username || url.password || url.pathname !== '/' || url.search || url.hash) return undefined;
     return url.origin;
-  });
+  } catch { return undefined; }
 }
-// The first origin is the fallback when no return URL is known.
+// Entries already reported, so a bad value warns once instead of on every request.
+const warned = new Set<string>();
+// CONNECT_RETURN_ORIGIN is a comma-separated list of allowed return origins.
+// An invalid entry is skipped with a warning so the valid ones keep working;
+// a value with no valid entry at all is an error.
+export function connectOrigins(): string[] {
+  const entries = (process.env.CONNECT_RETURN_ORIGIN || '').split(',').map((entry) => entry.trim()).filter(Boolean);
+  const origins: string[] = [];
+  for (const raw of entries) {
+    const origin = parseOrigin(raw);
+    if (origin) origins.push(origin);
+    else if (!warned.has(raw)) { warned.add(raw); console.warn(`CONNECT_RETURN_ORIGIN: ignoring invalid origin "${raw}"`); }
+  }
+  if (entries.length && !origins.length) throw new Error('Invalid connect return origin');
+  return origins;
+}
+// The first origin is the fallback when no return URL is known; undefined when
+// none is configured or none is valid, so error paths never throw on it.
 export function connectOrigin(): string | undefined {
-  return connectOrigins()[0];
+  try { return connectOrigins()[0]; } catch { return undefined; }
 }
 export function safeConnectReturn(value: string): string {
   const url = new URL(value);
