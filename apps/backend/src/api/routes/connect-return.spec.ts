@@ -148,6 +148,22 @@ describe('external OAuth contract',()=>{
   expect(f.response.clearCookie).not.toHaveBeenCalled();
   expect(f.response.redirect).toHaveBeenLastCalledWith('https://app.plumeza.io/connect/error?code=CONNECTION_FAILED');
  });
+ it('accepts any listed return origin and sends its errors back to it',async()=>{
+  process.env.CONNECT_RETURN_ORIGIN='https://app-one.example.com, https://app-two.example.com';
+  const f=fixture();const cookies:Record<string,string>={};
+  const first=await f.links.getOAuthUrl('token','linkedin-page','https://app-two.example.com/connect/token');
+  const raw=JSON.parse(f.store.get('connect-bootstrap:'+first.url.split('/').pop())!);
+  await f.links.start(first.url.split('/').pop()!,f.response as any,{cookies} as any);
+  expect(readReturnContext(raw.state,f.response.cookie.mock.calls[0][1])).toBe('https://app-two.example.com/connect/token');
+  for(let i=0;i<4;i++){
+    const result=await f.links.getOAuthUrl('token','linkedin-page','https://app-one.example.com/connect/token');
+    await f.links.start(result.url.split('/').pop()!,f.response as any,{cookies} as any);
+    const [name,value]=f.response.cookie.mock.calls[i+1];cookies[name]=value;
+  }
+  const overflow=await f.links.getOAuthUrl('token','linkedin-page','https://app-two.example.com/connect/token');
+  await f.links.start(overflow.url.split('/').pop()!,f.response as any,{cookies} as any);
+  expect(f.response.redirect).toHaveBeenLastCalledWith('https://app-two.example.com/connect/error?code=CONNECTION_FAILED');
+ });
  it('refuses an arbitrary browser return origin' ,async()=>{
   const {links}=fixture();await expect(links.getOAuthUrl('token','linkedin-page','https://evil.example/connect/token')).rejects.toMatchObject({status:400});
  });
@@ -231,5 +247,68 @@ describe('native YouTube OAuth gate', () => {
   f.store.set('connect-scope:state-a', JSON.stringify({ orgId: 'org-a', linkId: 'link-a', provider: 'youtube', providerScoped: true, pendingIntegrationId: 'expected-id' }));
   await expect(f.controller.saveProviderPage('other-id', { state: 'state-a' })).rejects.toMatchObject({ status: 400 });
   expect(f.integrations.getIntegrationById).not.toHaveBeenCalled();
+ });
+});
+
+describe('connect bootstrap error paths', () => {
+ const ONE = 'https://app-one.example.com';
+ const TWO = 'https://app-two.example.com';
+ const expired = (origin: string) => `${origin}/connect/error?code=SESSION_EXPIRED`;
+ const put = (store: Map<string,string>, id: string, value: unknown) =>
+  store.set(`connect-bootstrap:${id}`, typeof value === 'string' ? value : JSON.stringify(value));
+ let warn: jest.SpyInstance;
+ beforeEach(() => {
+  process.env.CONNECT_RETURN_ORIGIN = `${ONE},${TWO}`;
+  warn = jest.spyOn(console, 'warn').mockImplementation(() => undefined);
+ });
+ afterEach(() => warn.mockRestore());
+
+ it('sends an expired bootstrap to the first origin, with no cookie', async () => {
+  const f = fixture();
+  await f.links.start('gone', f.response as any);
+  expect(f.response.redirect).toHaveBeenCalledWith(expired(ONE));
+  expect(f.response.cookie).not.toHaveBeenCalled();
+ });
+ it('consumes and refuses a bootstrap that is not valid JSON', async () => {
+  const f = fixture(); put(f.store, 'bad-json', '{not json');
+  await f.links.start('bad-json', f.response as any);
+  expect(f.response.redirect).toHaveBeenCalledWith(expired(ONE));
+  expect(f.response.cookie).not.toHaveBeenCalled();
+  expect(f.store.has('connect-bootstrap:bad-json')).toBe(false);
+ });
+ it.each([
+  ['missing', undefined],
+  ['unlisted', 'https://evil.example/connect/token'],
+  ['malformed', 'not a url'],
+ ])('refuses a %s returnURL without reaching the provider', async (_label, returnURL) => {
+  const f = fixture(); put(f.store, 'no-return', { state: 's', url: 'https://provider.example.com/auth', returnURL });
+  await f.links.start('no-return', f.response as any);
+  expect(f.response.redirect).toHaveBeenCalledTimes(1);
+  expect(f.response.redirect).toHaveBeenCalledWith(expired(ONE));
+  expect(f.response.cookie).not.toHaveBeenCalled();
+ });
+ it.each(['http://provider.example.com/auth', 'not a url'])('refuses the provider URL %s and returns to the caller origin', async (url) => {
+  const f = fixture(); put(f.store, 'bad-url', { state: 's', url, returnURL: `${TWO}/connect/token` });
+  await f.links.start('bad-url', f.response as any);
+  expect(f.response.redirect).toHaveBeenCalledTimes(1);
+  expect(f.response.redirect).toHaveBeenCalledWith(expired(TWO));
+  expect(f.response.cookie).not.toHaveBeenCalled();
+ });
+ it('keeps working when part of the origin list is invalid', async () => {
+  process.env.CONNECT_RETURN_ORIGIN = `${ONE}, ftp://bad.example.com ,${TWO}/path,${TWO}`;
+  const f = fixture();
+  const result = await f.links.getOAuthUrl('token', 'linkedin-page', `${TWO}/connect/token`);
+  const bootstrap = result.url.split('/').pop()!;
+  const raw = JSON.parse(f.store.get('connect-bootstrap:' + bootstrap)!);
+  await f.links.start(bootstrap, f.response as any);
+  expect(f.response.redirect).toHaveBeenCalledWith(expect.stringContaining('https://linkedin.com/oauth?state='));
+  expect(readReturnContext(raw.state, f.response.cookie.mock.calls[0][1])).toBe(`${TWO}/connect/token`);
+  expect(warn).toHaveBeenCalled();
+ });
+ it('answers 410 instead of crashing when no valid origin is configured', async () => {
+  process.env.CONNECT_RETURN_ORIGIN = 'ftp://only-bad.example.com';
+  const f = fixture();
+  await expect(f.links.start('gone', f.response as any)).rejects.toMatchObject({ status: 410 });
+  await expect(f.links.getOAuthUrl('token', 'linkedin-page', `${ONE}/connect/token`)).rejects.toMatchObject({ status: 400 });
  });
 });
