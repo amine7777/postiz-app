@@ -237,6 +237,7 @@ export class PublicIntegrationsController {
         identifier: org.providerIdentifier,
         picture: org.picture,
         disabled: org.disabled,
+        disabledByLimit: org.disabledByLimit,
         profile: org.profile,
         customer: org.customer
           ? {
