@@ -28,6 +28,12 @@ export class PublicAuthMiddleware implements NestMiddleware {
         }
 
         const org = authorization.organization;
+        if (org.disabledAt) {
+          res
+            .status(HttpStatus.FORBIDDEN)
+            .json({ msg: 'Organization disabled' });
+          return;
+        }
         if (!!process.env.STRIPE_SECRET_KEY && !org.subscription) {
           res
             .status(HttpStatus.UNAUTHORIZED)
@@ -43,6 +49,13 @@ export class PublicAuthMiddleware implements NestMiddleware {
           res
             .status(HttpStatus.UNAUTHORIZED)
             .json({ msg: 'Invalid API key' });
+          return;
+        }
+
+        if (org.disabledAt) {
+          res
+            .status(HttpStatus.FORBIDDEN)
+            .json({ msg: 'Organization disabled' });
           return;
         }
 

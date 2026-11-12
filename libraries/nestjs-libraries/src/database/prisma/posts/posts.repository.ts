@@ -535,8 +535,11 @@ export class PostsRepository {
 
       posts.push(
         await this._post.model.post.upsert({
+          // A post id from the request only updates a post of this org;
+          // any other id creates a new post here instead.
           where: {
             id: value.id || uuidv4(),
+            organizationId: orgId,
           },
           create: { ...updateData('create') },
           update: {
@@ -595,6 +598,7 @@ export class PostsRepository {
           await this._post.model.post.findFirst({
             where: {
               group: body.group,
+              organizationId: orgId,
               deletedAt: null,
               parentPostId: null,
             },
@@ -609,6 +613,7 @@ export class PostsRepository {
       await this._post.model.post.updateMany({
         where: {
           group: body.group,
+          organizationId: orgId,
           deletedAt: null,
         },
         data: {

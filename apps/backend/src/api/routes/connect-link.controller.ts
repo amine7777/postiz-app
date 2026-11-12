@@ -23,12 +23,14 @@ export class ConnectLinkController {
     orgId: string;
     linkId: string;
     provider?: string;
+    refresh?: string;
   } {
     try {
       const payload = AuthService.verifyJWT(token) as {
         orgId: string;
         linkId: string;
         provider?: string;
+        refresh?: string;
         expiresAt: string;
       };
 
@@ -44,6 +46,7 @@ export class ConnectLinkController {
         orgId: payload.orgId,
         linkId: payload.linkId,
         provider: payload.provider?.toLowerCase(),
+        ...(payload.refresh ? { refresh: String(payload.refresh) } : {}),
       };
     } catch (err) {
       if (err instanceof HttpException) throw err;
@@ -58,6 +61,9 @@ export class ConnectLinkController {
     const org = await this._organizationService.getOrgById(orgId);
     if (!org) {
       throw new HttpException({ msg: 'Organization not found' }, 404);
+    }
+    if (org.disabledAt) {
+      throw new HttpException({ msg: 'Organization disabled' }, 403);
     }
 
     const integrations = await this._integrationManager.getAllIntegrations();
@@ -86,7 +92,7 @@ export class ConnectLinkController {
     // Omission explicitly retains the native Postiz connect-link flow.
     @Query('redirectUrl') redirectUrl?: string
   ) {
-    const { orgId, linkId, provider: linkProvider } = this.validateToken(token);
+    const { orgId, linkId, provider: linkProvider, refresh } = this.validateToken(token);
     const normalizedIntegration = integration.toLowerCase();
     if (linkProvider && normalizedIntegration !== linkProvider) {
       throw new HttpException({ msg: 'Integration not allowed for this link' }, 403);
@@ -104,6 +110,9 @@ export class ConnectLinkController {
     const org = await this._organizationService.getOrgById(orgId);
     if (!org) {
       throw new HttpException({ msg: 'Organization not found' }, 404);
+    }
+    if (org.disabledAt) {
+      throw new HttpException({ msg: 'Organization disabled' }, 403);
     }
 
     if (
@@ -159,6 +168,11 @@ export class ConnectLinkController {
     }
     await ioRedis.set(`organization:${state}`, orgId, 'EX', 3600);
     await ioRedis.set(`login:${state}`, codeVerifier, 'EX', 3600);
+    if (refresh) {
+      // Signed at link creation from the org's own channel. The callback only
+      // accepts the same platform account and updates that channel.
+      await ioRedis.set(`refresh:${state}`, refresh, 'EX', 3600);
+    }
     if (!returnURL) {
       await ioRedis.set(`redirect:${state}`, `${process.env.FRONTEND_URL}/connect/${token}?success=${integration}`, 'EX', 3600);
       return { url };
@@ -175,10 +189,13 @@ export class ConnectLinkController {
   async start(@Param('bootstrap') bootstrap: string, @Res() response: Response, @Req() request?: Request) {
     response.setHeader('Cache-Control', 'no-store');
     response.setHeader('Referrer-Policy', 'no-referrer');
+    // Send errors back to the app that started this attempt when it is known.
+    let returnOrigin: string | undefined;
     try {
       const raw = await ioRedis.getdel(`connect-bootstrap:${bootstrap}`);
       if (!raw) throw new Error('Expired bootstrap');
       const { state, url, returnURL } = JSON.parse(raw);
+      returnOrigin = new URL(safeConnectReturn(returnURL)).origin;
       const target = new URL(url);
       if (target.protocol !== 'https:') throw new Error('Invalid provider URL');
       // Bound abandoned attempts without evicting another active browser tab.
@@ -192,14 +209,14 @@ export class ConnectLinkController {
         } catch { /* malformed or expired cookie */ }
         if (valid) active++; else response.clearCookie(name, { path: '/' });
       }
-      if (active >= 4) return response.redirect(`${connectOrigin()}/connect/error?code=CONNECTION_FAILED`);
+      if (active >= 4) return response.redirect(`${returnOrigin}/connect/error?code=CONNECTION_FAILED`);
       response.cookie(returnCookieName(state), signReturnContext(state, returnURL), {
         httpOnly: true, secure: process.env.FRONTEND_URL?.startsWith('https://'),
         sameSite: 'lax', path: '/', maxAge: RETURN_TTL * 1000,
       });
       return response.redirect(target.toString());
     } catch {
-      const origin = connectOrigin();
+      const origin = returnOrigin || connectOrigin();
       if (origin) return response.redirect(`${origin}/connect/error?code=SESSION_EXPIRED`);
       throw new HttpException({ code: 'SESSION_EXPIRED' }, 410);
     }
