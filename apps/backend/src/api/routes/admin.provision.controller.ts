@@ -143,6 +143,8 @@ export class AdminProvisionController {
     await this.liveOrg(adminToken, id);
     const removed = await this._organizationService.deleteOrganization(id);
     return { organizationId: id, deleted: true, ...removed };
+  }
+
   private parseLimits(value: unknown) {
     try {
       return parseChannelLimits(

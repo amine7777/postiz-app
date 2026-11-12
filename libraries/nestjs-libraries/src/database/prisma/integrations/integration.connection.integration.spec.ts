@@ -511,6 +511,9 @@ integrationTests('page connection against PostgreSQL', () => {
       expect(
         await db.integration.findUniqueOrThrow({ where: { id: a.id } })
       ).toMatchObject({ deletedAt: null, token: 'fresh-token', refreshToken: 'fresh-refresh' });
+    });
+  });
+
   describe('per-org channel limits', () => {
     const limit = (channelLimits: any) =>
       db.organization.update({ where: { id: org }, data: { channelLimits } });
