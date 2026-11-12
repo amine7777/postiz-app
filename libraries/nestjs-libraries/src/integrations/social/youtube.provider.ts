@@ -21,11 +21,20 @@ import { GaxiosResponse } from 'gaxios/build/src/common';
 import Schema$Video = youtube_v3.Schema$Video;
 import { Rules } from '@gitroom/nestjs-libraries/chat/rules.description.decorator';
 
-const clientAndYoutube = (creds?: { clientId: string; clientSecret: string }) => {
+// The org app's own redirect URI when it has one (an owner-domain page that
+// forwards to the host's callback page), else the host's. The consent URL and
+// the code exchange must use the same one.
+const redirectUriFor = (redirectUri?: string) =>
+  redirectUri || `${process.env.FRONTEND_URL}/integrations/social/youtube`;
+
+const clientAndYoutube = (
+  creds?: { clientId: string; clientSecret: string },
+  redirectUri?: string
+) => {
   const client = new google.auth.OAuth2({
     clientId: creds?.clientId ?? process.env.YOUTUBE_CLIENT_ID,
     clientSecret: creds?.clientSecret ?? process.env.YOUTUBE_CLIENT_SECRET,
-    redirectUri: `${process.env.FRONTEND_URL}/integrations/social/youtube`,
+    redirectUri: redirectUriFor(redirectUri),
   });
 
   const youtube = (newClient: OAuth2Client) =>
@@ -162,13 +171,13 @@ export class YoutubeProvider extends SocialAbstract implements SocialProvider {
   async generateAuthUrl(clientInformation?: ClientInformation) {
     const state = makeId(7);
     const creds = clientInformation ? { clientId: clientInformation.client_id, clientSecret: clientInformation.client_secret } : undefined;
-    const { client } = clientAndYoutube(creds);
+    const { client } = clientAndYoutube(creds, clientInformation?.redirect_uri);
     return {
       url: client.generateAuthUrl({
         access_type: 'offline',
         prompt: 'consent',
         state,
-        redirect_uri: `${process.env.FRONTEND_URL}/integrations/social/youtube`,
+        redirect_uri: redirectUriFor(clientInformation?.redirect_uri),
         scope: this.scopes.slice(0),
       }),
       codeVerifier: makeId(11),
@@ -182,7 +191,7 @@ export class YoutubeProvider extends SocialAbstract implements SocialProvider {
     refresh?: string;
   }, clientInformation?: ClientInformation) {
     const creds = clientInformation ? { clientId: clientInformation.client_id, clientSecret: clientInformation.client_secret } : undefined;
-    const { client, oauth2 } = clientAndYoutube(creds);
+    const { client, oauth2 } = clientAndYoutube(creds, clientInformation?.redirect_uri);
     const { tokens } = await client.getToken(params.code);
     client.setCredentials(tokens);
     const { scopes } = await client.getTokenInfo(tokens.access_token!);

@@ -21,6 +21,7 @@ export class ProviderCredentialRepository {
     return {
       clientId: AuthService.fixedDecryption(record.clientId),
       clientSecret: AuthService.fixedDecryption(record.clientSecret),
+      redirectUrl: record.redirectUrl ?? undefined,
     };
   }
 
@@ -28,7 +29,8 @@ export class ProviderCredentialRepository {
     orgId: string,
     provider: string,
     clientId: string,
-    clientSecret: string
+    clientSecret: string,
+    redirectUrl?: string | null
   ) {
     const encryptedClientId = AuthService.fixedEncryption(clientId);
     const encryptedClientSecret = AuthService.fixedEncryption(clientSecret);
@@ -45,10 +47,13 @@ export class ProviderCredentialRepository {
         provider,
         clientId: encryptedClientId,
         clientSecret: encryptedClientSecret,
+        redirectUrl: redirectUrl || null,
       },
+      // PUT replaces the app: a missing redirectUrl clears it.
       update: {
         clientId: encryptedClientId,
         clientSecret: encryptedClientSecret,
+        redirectUrl: redirectUrl || null,
         deletedAt: null,
       },
     });
@@ -66,6 +71,7 @@ export class ProviderCredentialRepository {
       where: { organizationId: orgId, deletedAt: null },
       select: {
         provider: true,
+        redirectUrl: true,
         createdAt: true,
         updatedAt: true,
       },

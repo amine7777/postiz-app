@@ -18,13 +18,15 @@ export class ProviderCredentialService {
     orgId: string,
     provider: string,
     clientId: string,
-    clientSecret: string
+    clientSecret: string,
+    redirectUrl?: string | null
   ) {
     return this._providerCredentialRepository.upsert(
       orgId,
       provider,
       clientId,
-      clientSecret
+      clientSecret,
+      redirectUrl
     );
   }
 
