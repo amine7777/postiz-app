@@ -108,6 +108,7 @@ integrationTests('page connection against PostgreSQL', () => {
       { model: db } as any,
       { model: db } as any,
       { model: db } as any,
+      { model: db } as any,
       { model: db } as any
     );
     const manager = { getSocialIntegration: () => provider };
@@ -444,6 +445,7 @@ integrationTests('page connection against PostgreSQL', () => {
             db.$transaction(async (tx) => {
               let writes = 0;
               return run({
+                organization: tx.organization,
                 integration: {
                   findFirst: tx.integration.findFirst.bind(tx.integration),
                   findUnique: tx.integration.findUnique.bind(tx.integration),
@@ -456,7 +458,8 @@ integrationTests('page connection against PostgreSQL', () => {
               });
             }, options),
         },
-      } as any
+      } as any,
+      { model: db } as any
     );
     await expect(
       broken.updateIntegration(pending.id, {
@@ -470,5 +473,205 @@ integrationTests('page connection against PostgreSQL', () => {
     expect(
       await db.integration.findUnique({ where: { id: pending.id } })
     ).toEqual(pending);
+  });
+
+  describe('per-org channel limits', () => {
+    const limit = (channelLimits: any) =>
+      db.organization.update({ where: { id: org }, data: { channelLimits } });
+    const active = () =>
+      db.integration.count({
+        where: {
+          organizationId: org,
+          deletedAt: null,
+          inBetweenSteps: false,
+          disabled: false,
+        },
+      });
+    const connectX = (internalId: string) =>
+      repository.createOrUpdateIntegration(
+        undefined,
+        false,
+        org,
+        internalId,
+        undefined,
+        'social',
+        internalId,
+        'x',
+        'token'
+      );
+
+    it('refuses a page over the limit with CHANNEL_LIMIT and changes nothing', async () => {
+      await limit({ 'linkedin-page': 1 });
+      const a = await page('A');
+      const pending = await draft();
+      await expect(
+        controller.saveProviderPage(pending.id, { state: 'test-state', page: 'B' })
+      ).rejects.toMatchObject({
+        status: 403,
+        response: { code: 'CHANNEL_LIMIT' },
+      });
+      expect(await db.integration.findUnique({ where: { id: a.id } })).toEqual(a);
+      expect(
+        await db.integration.findUnique({ where: { id: pending.id } })
+      ).toMatchObject({ inBetweenSteps: true, deletedAt: null });
+      expect(await active()).toBe(1);
+    });
+
+    it('lets the consent re-select the page that is already connected', async () => {
+      await limit({ 'linkedin-page': 1 });
+      const a = await page('A');
+      const pending = await draft();
+      await expect(
+        controller.saveProviderPage(pending.id, { state: 'test-state', page: 'A' })
+      ).resolves.toMatchObject({ success: true, id: a.id });
+      expect(await active()).toBe(1);
+    });
+
+    it('counts a disabled page as new when it is selected again', async () => {
+      await limit({ 'linkedin-page': 1 });
+      await page('A');
+      const b = await page('B');
+      await db.integration.update({ where: { id: b.id }, data: { disabled: true } });
+      const pending = await draft();
+      await expect(
+        controller.saveProviderPage(pending.id, { state: 'test-state', page: 'B' })
+      ).rejects.toMatchObject({ status: 403 });
+      expect(
+        await db.integration.findUnique({ where: { id: b.id } })
+      ).toMatchObject({ disabled: true });
+    });
+
+    it('several pages saved at once: only one takes the last slot', async () => {
+      await limit({ 'linkedin-page': 1 });
+      const drafts = [await draft(), await draft(), await draft()];
+      const results = await Promise.allSettled(
+        drafts.map((d, i) =>
+          controller.saveProviderPage(d.id, {
+            state: 'test-state',
+            page: `P${i}`,
+          })
+        )
+      );
+      expect(results.filter((r) => r.status === 'fulfilled')).toHaveLength(1);
+      expect(await active()).toBe(1);
+    });
+
+    it('refuses a single-step channel over the limit; the existing one still refreshes', async () => {
+      await limit({ x: 1 });
+      await connectX('x-1');
+      await expect(connectX('x-2')).rejects.toMatchObject({
+        status: 403,
+        response: { code: 'CHANNEL_LIMIT', provider: 'x', limit: 1 },
+      });
+      await expect(connectX('x-1')).resolves.toMatchObject({ internalId: 'x-1' });
+      expect(await active()).toBe(1);
+    });
+
+    it('limits one provider only', async () => {
+      await limit({ x: 0 });
+      await page('A');
+      await page('B');
+      await expect(connectX('x-1')).rejects.toMatchObject({ status: 403 });
+      expect(await active()).toBe(2);
+    });
+
+    it('enabling a channel over the limit is refused', async () => {
+      await limit({ 'linkedin-page': 1 });
+      const a = await page('A');
+      const b = await page('B');
+      await db.integration.update({ where: { id: b.id }, data: { disabled: true } });
+      await expect(service.enableChannel(org, 1000, b.id)).rejects.toMatchObject({
+        status: 403,
+      });
+      await service.disableChannel(org, a.id);
+      await service.enableChannel(org, 1000, b.id);
+      expect(
+        await db.integration.findUnique({ where: { id: b.id } })
+      ).toMatchObject({ disabled: false });
+    });
+
+    it('lowering a limit keeps the oldest channels and disables the rest', async () => {
+      const a = await page('A');
+      const b = await page('B');
+      const c = await page('C');
+      for (const [i, row] of [a, b, c].entries())
+        await db.integration.update({
+          where: { id: row.id },
+          data: { createdAt: new Date(Date.UTC(2030, 0, 1 + i)) },
+        });
+      const foreign = await page('F', foreignOrg);
+
+      const { disabled } = await service.applyChannelLimits(org, {
+        'linkedin-page': 1,
+      });
+
+      expect(disabled.sort()).toEqual([b.id, c.id].sort());
+      expect(
+        (await db.integration.findUnique({ where: { id: a.id } }))?.disabled
+      ).toBe(false);
+      expect(
+        await db.integration.findUnique({ where: { id: b.id } })
+      ).toMatchObject({ disabled: true, disabledByLimit: true });
+      expect(
+        (await db.integration.findUnique({ where: { id: foreign.id } }))?.disabled
+      ).toBe(false);
+    });
+
+    async function threePages() {
+      const rows = [await page('A'), await page('B'), await page('C')];
+      for (const [i, row] of rows.entries())
+        await db.integration.update({
+          where: { id: row.id },
+          data: { createdAt: new Date(Date.UTC(2030, 0, 1 + i)) },
+        });
+      return rows;
+    }
+    const isDisabled = async (id: string) =>
+      (await db.integration.findUniqueOrThrow({ where: { id } })).disabled;
+
+    it('raising a limit brings back the channels it paused, oldest first', async () => {
+      const [a, b, c] = await threePages();
+      await service.applyChannelLimits(org, { 'linkedin-page': 1 });
+      const { enabled } = await service.applyChannelLimits(org, { 'linkedin-page': 2 });
+      expect(enabled).toEqual([b.id]);
+      expect([await isDisabled(a.id), await isDisabled(b.id), await isDisabled(c.id)]).toEqual([false, false, true]);
+      const cleared = await service.applyChannelLimits(org, null);
+      expect(cleared.enabled).toEqual([c.id]);
+      expect(await isDisabled(c.id)).toBe(false);
+    });
+
+    it('a channel the user paused stays paused when the limit goes up', async () => {
+      const [a, b] = await threePages();
+      await service.disableChannel(org, b.id);
+      await service.applyChannelLimits(org, { 'linkedin-page': 1 });
+      const { enabled } = await service.applyChannelLimits(org, null);
+      expect(enabled).not.toContain(b.id);
+      expect(await db.integration.findUniqueOrThrow({ where: { id: b.id } })).toMatchObject({
+        disabled: true,
+        disabledByLimit: false,
+      });
+      expect(await isDisabled(a.id)).toBe(false);
+    });
+
+    it('a channel the user enabled again is no longer tied to the limit', async () => {
+      const [, b] = await threePages();
+      await service.applyChannelLimits(org, { 'linkedin-page': 1 });
+      await limit({ 'linkedin-page': 3 });
+      await service.enableChannel(org, 1000, b.id);
+      expect(await db.integration.findUniqueOrThrow({ where: { id: b.id } })).toMatchObject({
+        disabled: false,
+        disabledByLimit: false,
+      });
+    });
+
+    it('no limit set: pages and channels connect as before', async () => {
+      await page('A');
+      await page('B');
+      await connectX('x-1');
+      await connectX('x-2');
+      const pending = await draft();
+      await controller.saveProviderPage(pending.id, { state: 'test-state', page: 'C' });
+      expect(await active()).toBe(5);
+    });
   });
 });

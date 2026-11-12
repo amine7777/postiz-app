@@ -10,6 +10,11 @@ import { makeId } from '@gitroom/nestjs-libraries/services/make.is';
 import { IntegrationTimeDto } from '@gitroom/nestjs-libraries/dtos/integrations/integration.time.dto';
 import { UploadFactory } from '@gitroom/nestjs-libraries/upload/upload.factory';
 import { PlugDto } from '@gitroom/nestjs-libraries/dtos/plugs/plug.dto';
+import {
+  assertWithinChannelLimit,
+  channelLimitFor,
+  ChannelLimits,
+} from '@gitroom/nestjs-libraries/database/prisma/integrations/channel-limits';
 
 @Injectable()
 export class IntegrationRepository {
@@ -21,8 +26,84 @@ export class IntegrationRepository {
     private _exisingPlugData: PrismaRepository<'exisingPlugData'>,
     private _customers: PrismaRepository<'customer'>,
     private _mentions: PrismaRepository<'mentions'>,
-    private _transaction: PrismaTransaction
+    private _transaction: PrismaTransaction,
+    private _organization: PrismaRepository<'organization'>
   ) {}
+
+  assertChannelLimit(
+    org: string,
+    provider: string,
+    internalId: string,
+    enables: boolean
+  ) {
+    return assertWithinChannelLimit(
+      {
+        organization: this._organization.model.organization,
+        integration: this._integration.model.integration,
+      },
+      org,
+      provider,
+      internalId,
+      enables
+    );
+  }
+
+  /**
+   * Brings the org's channels in line with its limits (null: no limits).
+   * Per limited provider the oldest active channels stay and the rest are
+   * disabled and marked disabledByLimit. Channels marked that way come back,
+   * oldest first, as soon as there is room again (limit raised or removed).
+   * A channel the user disabled is never enabled here.
+   */
+  async applyChannelLimits(org: string, limits: ChannelLimits | null) {
+    const disabled: string[] = [];
+    const enabled: string[] = [];
+    const live = { organizationId: org, deletedAt: null as Date | null, inBetweenSteps: false };
+    const order = [{ createdAt: 'asc' as const }, { id: 'asc' as const }];
+    const providers = await this._integration.model.integration.findMany({
+      where: live,
+      select: { providerIdentifier: true },
+      distinct: ['providerIdentifier'],
+    });
+    for (const { providerIdentifier: provider } of providers) {
+      const limit = channelLimitFor(limits, provider);
+      const active = await this._integration.model.integration.findMany({
+        where: { ...live, providerIdentifier: provider, disabled: false },
+        orderBy: order,
+        select: { id: true },
+      });
+      if (limit !== undefined && active.length > limit) {
+        const extra = active.slice(limit).map((p) => p.id);
+        await this._integration.model.integration.updateMany({
+          where: { organizationId: org, id: { in: extra } },
+          data: { disabled: true, disabledByLimit: true },
+        });
+        disabled.push(...extra);
+        continue;
+      }
+      const room = limit === undefined ? undefined : limit - active.length;
+      if (room === 0) continue;
+      const parked = await this._integration.model.integration.findMany({
+        where: {
+          ...live,
+          providerIdentifier: provider,
+          disabled: true,
+          disabledByLimit: true,
+        },
+        orderBy: order,
+        ...(room === undefined ? {} : { take: room }),
+        select: { id: true },
+      });
+      if (!parked.length) continue;
+      const back = parked.map((p) => p.id);
+      await this._integration.model.integration.updateMany({
+        where: { organizationId: org, id: { in: back } },
+        data: { disabled: false, disabledByLimit: false },
+      });
+      enabled.push(...back);
+    }
+    return { disabled, enabled };
+  }
 
   getMentions(platform: string, q: string) {
     return this._mentions.model.mentions.findMany({
@@ -206,6 +287,15 @@ export class IntegrationRepository {
             HttpStatus.CONFLICT
           );
         }
+        // Inside the serializable transaction, so two pages saved at the same
+        // time cannot both take the last free slot.
+        await assertWithinChannelLimit(
+          tx,
+          params.organizationId!,
+          source.providerIdentifier,
+          params.internalId!,
+          true
+        );
 
         const saved = await tx.integration.update({
           where: {
@@ -215,6 +305,7 @@ export class IntegrationRepository {
           data: {
             ...params,
             disabled: false,
+            disabledByLimit: false,
             deletedAt: null,
             refreshNeeded: false,
           },
@@ -299,6 +390,12 @@ export class IntegrationRepository {
       isBetweenSteps && !refresh
         ? `pending:${provider}:${randomUUID()}`
         : internalId;
+    if (connectionId === internalId) {
+      // ponytail: check then upsert, not atomic; two single-step consents for
+      // the same provider finishing at the same instant can both pass. Move the
+      // upsert into a serializable transaction if that ever matters.
+      await this.assertChannelLimit(org, provider, internalId, false);
+    }
     const postTimes = timezone
       ? {
           postingTimes: JSON.stringify([
@@ -574,8 +671,10 @@ export class IntegrationRepository {
         id,
         organizationId: org,
       },
+      // The user's own choice: never re-enabled by a limit change.
       data: {
         disabled: true,
+        disabledByLimit: false,
       },
     });
   }
@@ -588,6 +687,7 @@ export class IntegrationRepository {
       },
       data: {
         disabled: false,
+        disabledByLimit: false,
       },
     });
   }
