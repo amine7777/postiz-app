@@ -60,7 +60,7 @@ export const ContinueIntegration: FC<{
       ['success', 'added', 'msg', 'status', 'receipt', 'code', 'requestId', 'onboarding'].forEach(key => destination.searchParams.delete(key));
       destination.searchParams.set('status', 'error');
       destination.searchParams.set('provider', provider);
-      const allowed = ['SESSION_EXPIRED', 'PROVIDER_REJECTED', 'SAVE_FAILED', 'CONNECTION_FAILED', 'INVALID_ATTEMPT', 'RESULT_MISSING', 'CONNECTION_NOT_ALLOWED'];
+      const allowed = ['SESSION_EXPIRED', 'PROVIDER_REJECTED', 'SAVE_FAILED', 'CONNECTION_FAILED', 'INVALID_ATTEMPT', 'RESULT_MISSING', 'CONNECTION_NOT_ALLOWED', 'CHANNEL_LIMIT'];
       destination.searchParams.set('code', allowed.includes(code) ? code : 'CONNECTION_FAILED');
       if (typeof data.requestId === 'string' && /^[0-9a-f-]{36}$/i.test(data.requestId)) destination.searchParams.set('requestId', data.requestId);
       push(destination.toString());

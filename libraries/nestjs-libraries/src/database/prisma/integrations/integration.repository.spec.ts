@@ -19,7 +19,10 @@ describe('page selection persistence', () => {
     updateMany: jest.fn<(...args: any[]) => Promise<any>>(),
   };
   const post = { updateMany: jest.fn() };
-  const transaction = jest.fn(async (run: any) => run({ integration }));
+  const organization = { findUnique: jest.fn(async () => null) };
+  const transaction = jest.fn(async (run: any) =>
+    run({ integration, organization })
+  );
   const repository = new IntegrationRepository(
     { model: { integration } } as any,
     { model: { post } } as any,
@@ -27,7 +30,8 @@ describe('page selection persistence', () => {
     {} as any,
     {} as any,
     {} as any,
-    { model: { $transaction: transaction } } as any
+    { model: { $transaction: transaction } } as any,
+    { model: { organization } } as any
   );
   const params = {
     organizationId: 'connect-org',
@@ -109,6 +113,7 @@ describe('page selection persistence', () => {
       data: {
         ...params,
         disabled: false,
+        disabledByLimit: false,
         deletedAt: null,
         refreshNeeded: false,
       },
@@ -126,6 +131,7 @@ describe('page selection persistence', () => {
       data: {
         ...params,
         disabled: false,
+        disabledByLimit: false,
         deletedAt: null,
         refreshNeeded: false,
       },

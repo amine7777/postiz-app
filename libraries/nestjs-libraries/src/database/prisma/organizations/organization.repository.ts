@@ -203,6 +203,14 @@ export class OrganizationRepository {
     });
   }
 
+  setChannelLimits(orgId: string, channelLimits: Record<string, number> | null) {
+    return this._organization.model.organization.update({
+      where: { id: orgId },
+      data: { channelLimits: channelLimits ?? Prisma.DbNull },
+      select: { id: true, channelLimits: true },
+    });
+  }
+
   updateApiKey(orgId: string) {
     return this._organization.model.organization.update({
       where: {

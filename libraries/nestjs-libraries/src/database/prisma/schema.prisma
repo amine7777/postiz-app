@@ -48,6 +48,8 @@ model Organization {
   disabledAt          DateTime?
   /// Set by admin deletion (irreversible); disabledAt is set too.
   deletedAt           DateTime?
+  /// Max active channels per provider identifier, e.g. {"youtube":2}. Null: no limit.
+  channelLimits       Json?
 
   @@index([apiKey])
   @@index([streakSince])
@@ -326,6 +328,8 @@ model Integration {
   type                  String
   token                 String
   disabled              Boolean                @default(false)
+  /// Disabled by the org's channel limits (not by the user): enabled again when there is room.
+  disabledByLimit       Boolean                @default(false)
   tokenExpiration       DateTime?
   refreshToken          String?
   profile               String?
