@@ -192,6 +192,7 @@ export class InstagramStandaloneProvider
       id,
       accessToken,
       date,
+      undefined,
       'graph.instagram.com'
     );
   }
@@ -207,6 +208,7 @@ export class InstagramStandaloneProvider
       accessToken,
       postId,
       date,
+      undefined,
       'graph.instagram.com'
     );
   }

@@ -806,6 +806,8 @@ export class InstagramProvider
     id: string,
     accessToken: string,
     date: number,
+    // The interface passes the channel here; the Graph host comes after it.
+    _integration?: Integration,
     type = 'graph.facebook.com'
   ): Promise<AnalyticsData[]> {
     const until = dayjs().startOf('day').unix();
@@ -868,6 +870,7 @@ export class InstagramProvider
     accessToken: string,
     postId: string,
     date: number,
+    _integration?: Integration,
     type = 'graph.facebook.com'
   ): Promise<AnalyticsData[]> {
     const today = dayjs().format('YYYY-MM-DD');
