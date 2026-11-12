@@ -32,6 +32,7 @@ import {
 } from '@gitroom/backend/services/auth/permissions/permission.exception.class';
 import { uniqBy } from 'lodash';
 import { RefreshIntegrationService } from '@gitroom/nestjs-libraries/integrations/refresh.integration.service';
+import { assertNativeYoutubeOAuthEnabled } from '../youtube-oauth-gate';
 
 @ApiTags('Integrations')
 @Controller('/integrations')
@@ -200,6 +201,7 @@ export class IntegrationsController {
     @Query('onboarding') onboarding: string,
     @GetOrgFromRequest() org: Organization
   ) {
+    assertNativeYoutubeOAuthEnabled(integration);
     if (
       !this._integrationManager
         .getAllowedSocialsIntegrations()

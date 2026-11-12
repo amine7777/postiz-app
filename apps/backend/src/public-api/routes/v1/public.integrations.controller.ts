@@ -62,6 +62,7 @@ import { ProviderCredentialService } from '@gitroom/nestjs-libraries/database/pr
 import { InjectTokenDto } from '@gitroom/nestjs-libraries/dtos/integrations/inject-token.dto';
 import { UpsertProviderCredentialDto } from '@gitroom/nestjs-libraries/dtos/integrations/upsert-provider-credential.dto';
 import { CreateConnectLinkDto } from '@gitroom/nestjs-libraries/dtos/integrations/create-connect-link.dto';
+import { connectLinkTokenPayload } from '../../connect-link-token';
 import { AuthService } from '@gitroom/helpers/auth/auth.service';
 import { makeId } from '@gitroom/nestjs-libraries/services/make.is';
 import dayjs from 'dayjs';
@@ -622,11 +623,16 @@ export class PublicIntegrationsController {
   ) {
     Sentry.metrics.count('public_api-request', 1);
     const hours = body.expiresInHours || 24;
-    const token = AuthService.signJWT({
-      orgId: org.id,
-      linkId: makeId(10),
-      expiresAt: dayjs().add(hours, 'hours').toISOString(),
-    });
+    const provider = body.provider?.trim().toLowerCase();
+    const allowedProviders = this._integrationManager
+      .getAllowedSocialsIntegrations()
+      .map((integration) => integration.toLowerCase());
+    if (provider && !allowedProviders.includes(provider)) {
+      throw new HttpException({ msg: 'Integration not allowed' }, 400);
+    }
+    const token = AuthService.signJWT(
+      connectLinkTokenPayload(org.id, makeId(10), dayjs().add(hours, 'hours').toISOString(), provider),
+    );
 
     return {
       token,

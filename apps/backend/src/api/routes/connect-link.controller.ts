@@ -19,11 +19,16 @@ export class ConnectLinkController {
     private _providerCredentialService: ProviderCredentialService
   ) {}
 
-  private validateToken(token: string): { orgId: string; linkId: string } {
+  private validateToken(token: string): {
+    orgId: string;
+    linkId: string;
+    provider?: string;
+  } {
     try {
       const payload = AuthService.verifyJWT(token) as {
         orgId: string;
         linkId: string;
+        provider?: string;
         expiresAt: string;
       };
 
@@ -35,7 +40,11 @@ export class ConnectLinkController {
         throw new HttpException({ msg: 'Connect link has expired' }, 410);
       }
 
-      return payload;
+      return {
+        orgId: payload.orgId,
+        linkId: payload.linkId,
+        provider: payload.provider?.toLowerCase(),
+      };
     } catch (err) {
       if (err instanceof HttpException) throw err;
       throw new HttpException({ msg: 'Invalid connect link' }, 400);
@@ -44,7 +53,7 @@ export class ConnectLinkController {
 
   @Get('/:token/integrations')
   async getAvailableIntegrations(@Param('token') token: string) {
-    const { orgId } = this.validateToken(token);
+    const { orgId, provider: linkProvider } = this.validateToken(token);
 
     const org = await this._organizationService.getOrgById(orgId);
     if (!org) {
@@ -55,6 +64,15 @@ export class ConnectLinkController {
 
     return integrations.social
       .filter((i) => !i.isWeb3 && !i.isChromeExtension)
+      .filter((integration) => {
+        const identifier = integration.identifier.toLowerCase();
+        if (linkProvider) return identifier === linkProvider;
+        // Legacy/generic bearer links must not expose YouTube during Google review.
+        return (
+          identifier !== 'youtube' ||
+          process.env.POSTIZ_YOUTUBE_OAUTH_ENABLED === 'true'
+        );
+      })
       .map((i) => ({
         name: i.name,
         identifier: i.identifier,
@@ -68,7 +86,18 @@ export class ConnectLinkController {
     // Omission explicitly retains the native Postiz connect-link flow.
     @Query('redirectUrl') redirectUrl?: string
   ) {
-    const { orgId, linkId } = this.validateToken(token);
+    const { orgId, linkId, provider: linkProvider } = this.validateToken(token);
+    const normalizedIntegration = integration.toLowerCase();
+    if (linkProvider && normalizedIntegration !== linkProvider) {
+      throw new HttpException({ msg: 'Integration not allowed for this link' }, 403);
+    }
+    if (
+      !linkProvider &&
+      normalizedIntegration === 'youtube' &&
+      process.env.POSTIZ_YOUTUBE_OAUTH_ENABLED !== 'true'
+    ) {
+      throw new HttpException({ msg: 'Integration not enabled for connect links' }, 403);
+    }
     let returnURL: string | undefined;
     try { if (redirectUrl !== undefined) returnURL = safeConnectReturn(redirectUrl); } catch { throw new HttpException({ code: 'INVALID_RETURN_URL' }, 400); }
 
@@ -113,7 +142,21 @@ export class ConnectLinkController {
       url = authorization.toString();
     }
 
-    const context = { orgId, linkId, provider: integration, returnURL };
+    const context = {
+      orgId,
+      linkId,
+      provider: integration,
+      providerScoped: !!linkProvider,
+      returnURL,
+    };
+    if (linkProvider) {
+      await ioRedis.set(
+        `connect-scope:${state}`,
+        JSON.stringify({ orgId, linkId, provider: integration, providerScoped: true }),
+        'EX',
+        3600
+      );
+    }
     await ioRedis.set(`organization:${state}`, orgId, 'EX', 3600);
     await ioRedis.set(`login:${state}`, codeVerifier, 'EX', 3600);
     if (!returnURL) {
@@ -132,10 +175,13 @@ export class ConnectLinkController {
   async start(@Param('bootstrap') bootstrap: string, @Res() response: Response, @Req() request?: Request) {
     response.setHeader('Cache-Control', 'no-store');
     response.setHeader('Referrer-Policy', 'no-referrer');
+    // Send errors back to the app that started this attempt when it is known.
+    let returnOrigin: string | undefined;
     try {
       const raw = await ioRedis.getdel(`connect-bootstrap:${bootstrap}`);
       if (!raw) throw new Error('Expired bootstrap');
       const { state, url, returnURL } = JSON.parse(raw);
+      returnOrigin = new URL(safeConnectReturn(returnURL)).origin;
       const target = new URL(url);
       if (target.protocol !== 'https:') throw new Error('Invalid provider URL');
       // Bound abandoned attempts without evicting another active browser tab.
@@ -149,14 +195,14 @@ export class ConnectLinkController {
         } catch { /* malformed or expired cookie */ }
         if (valid) active++; else response.clearCookie(name, { path: '/' });
       }
-      if (active >= 4) return response.redirect(`${connectOrigin()}/connect/error?code=CONNECTION_FAILED`);
+      if (active >= 4) return response.redirect(`${returnOrigin}/connect/error?code=CONNECTION_FAILED`);
       response.cookie(returnCookieName(state), signReturnContext(state, returnURL), {
         httpOnly: true, secure: process.env.FRONTEND_URL?.startsWith('https://'),
         sameSite: 'lax', path: '/', maxAge: RETURN_TTL * 1000,
       });
       return response.redirect(target.toString());
     } catch {
-      const origin = connectOrigin();
+      const origin = returnOrigin || connectOrigin();
       if (origin) return response.redirect(`${origin}/connect/error?code=SESSION_EXPIRED`);
       throw new HttpException({ code: 'SESSION_EXPIRED' }, 410);
     }
