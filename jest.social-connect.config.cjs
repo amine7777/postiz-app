@@ -9,6 +9,7 @@ module.exports = {
     '<rootDir>/libraries/nestjs-libraries/src/database/prisma/integrations/integration.repository.spec.ts',
     '<rootDir>/libraries/nestjs-libraries/src/database/prisma/integrations/integration.connection.integration.spec.ts',
     '<rootDir>/libraries/nestjs-libraries/src/integrations/social/linkedin.page.provider.spec.ts',
+    '<rootDir>/apps/backend/src/public-api/routes/v1/public.integrations.channel-state.spec.ts',
     '<rootDir>/libraries/nestjs-libraries/src/database/prisma/integrations/channel-limits.spec.ts',
     '<rootDir>/apps/backend/src/api/routes/admin.provision.spec.ts',
     '<rootDir>/libraries/nestjs-libraries/src/integrations/social/x.provider.spec.ts',
