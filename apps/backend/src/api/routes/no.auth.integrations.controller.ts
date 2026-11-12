@@ -423,7 +423,7 @@ export class NoAuthIntegrationsController {
       const supplied = error instanceof HttpException ? error.getResponse() : undefined;
       const known = typeof supplied === 'object' ? (supplied as any)?.code : undefined;
       const expired = ['Invalid state', 'Organization not found'].includes(error?.message);
-      const code = ['SESSION_EXPIRED', 'INVALID_ATTEMPT'].includes(known) ? known
+      const code = ['SESSION_EXPIRED', 'INVALID_ATTEMPT', 'CHANNEL_LIMIT'].includes(known) ? known
         : expired ? 'SESSION_EXPIRED' : error instanceof NotEnoughScopes ? 'PROVIDER_REJECTED'
         : pendingId ? 'SAVE_FAILED' : 'CONNECTION_FAILED';
       const providerFailure = error instanceof ProviderConnectionError

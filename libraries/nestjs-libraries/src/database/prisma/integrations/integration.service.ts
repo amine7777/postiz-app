@@ -6,6 +6,7 @@ import {
   Injectable,
 } from '@nestjs/common';
 import { IntegrationRepository } from '@gitroom/nestjs-libraries/database/prisma/integrations/integration.repository';
+import { ChannelLimits } from '@gitroom/nestjs-libraries/database/prisma/integrations/channel-limits';
 import { IntegrationManager } from '@gitroom/nestjs-libraries/integrations/integration.manager';
 import {
   AnalyticsData,
@@ -262,6 +263,19 @@ export class IntegrationService {
       throw new Error('You have reached the maximum number of channels');
     }
 
+    const channel = await this._integrationRepository.getIntegrationById(
+      org,
+      id
+    );
+    if (channel) {
+      await this._integrationRepository.assertChannelLimit(
+        org,
+        channel.providerIdentifier,
+        channel.internalId,
+        true
+      );
+    }
+
     return this._integrationRepository.enableChannel(org, id);
   }
 
@@ -271,6 +285,10 @@ export class IntegrationService {
 
   async deleteChannel(org: string, id: string) {
     return this._integrationRepository.deleteChannel(org, id);
+  }
+
+  applyChannelLimits(org: string, limits: ChannelLimits | null) {
+    return this._integrationRepository.applyChannelLimits(org, limits);
   }
 
   async disableIntegrations(org: string, totalChannels: number) {

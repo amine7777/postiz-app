@@ -1,5 +1,10 @@
 import { PrismaRepository } from '@gitroom/nestjs-libraries/database/prisma/prisma.service';
-import { Role, ShortLinkPreference, SubscriptionTier } from '@prisma/client';
+import {
+  Prisma,
+  Role,
+  ShortLinkPreference,
+  SubscriptionTier,
+} from '@prisma/client';
 import { Injectable } from '@nestjs/common';
 import { AuthService } from '@gitroom/helpers/auth/auth.service';
 import { CreateOrgUserDto } from '@gitroom/nestjs-libraries/dtos/auth/create.org.user.dto';
@@ -150,6 +155,14 @@ export class OrganizationRepository {
           },
         },
       },
+    });
+  }
+
+  setChannelLimits(orgId: string, channelLimits: Record<string, number> | null) {
+    return this._organization.model.organization.update({
+      where: { id: orgId },
+      data: { channelLimits: channelLimits ?? Prisma.DbNull },
+      select: { id: true, channelLimits: true },
     });
   }
 
