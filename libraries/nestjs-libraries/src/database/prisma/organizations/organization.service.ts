@@ -61,6 +61,13 @@ export class OrganizationService {
     return this._organizationRepository.getOrgsByUserId(userId);
   }
 
+  setDisabled(orgId: string, disabled: boolean) {
+    return this._organizationRepository.setDisabled(orgId, disabled);
+  }
+
+  deleteOrganization(orgId: string) {
+    return this._organizationRepository.deleteOrganization(orgId);
+  }
   setChannelLimits(orgId: string, channelLimits: Record<string, number> | null) {
     return this._organizationRepository.setChannelLimits(orgId, channelLimits);
   }
