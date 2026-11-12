@@ -1,13 +1,23 @@
 import {
+  BadRequestException,
   Body,
+  ConflictException,
   Controller,
+  Delete,
   Headers,
+  HttpCode,
+  NotFoundException,
+  Param,
+  NotFoundException,
+  Param,
+  Patch,
   Post,
   UnauthorizedException,
 } from '@nestjs/common';
 import {
   IsDefined,
   IsEmail,
+  IsOptional,
   IsString,
   MaxLength,
   MinLength,
@@ -16,6 +26,9 @@ import { Provider } from '@prisma/client';
 import { OrganizationService } from '@gitroom/nestjs-libraries/database/prisma/organizations/organization.service';
 import { UsersService } from '@gitroom/nestjs-libraries/database/prisma/users/users.service';
 import { makeId } from '@gitroom/nestjs-libraries/services/make.is';
+import { IntegrationService } from '@gitroom/nestjs-libraries/database/prisma/integrations/integration.service';
+import { IntegrationManager } from '@gitroom/nestjs-libraries/integrations/integration.manager';
+import { parseChannelLimits } from '@gitroom/nestjs-libraries/database/prisma/integrations/channel-limits';
 
 class ProvisionOrgDto {
   @IsString()
@@ -27,6 +40,15 @@ class ProvisionOrgDto {
   @IsEmail()
   @IsDefined()
   email: string;
+
+  /** Optional { [provider]: maxActiveChannels }; null clears. See PATCH below. */
+  @IsOptional()
+  channelLimits?: unknown;
+}
+
+class UpdateOrgDto {
+  @IsDefined()
+  channelLimits: unknown;
 }
 
 /**
@@ -39,24 +61,155 @@ class ProvisionOrgDto {
  *
  *   POST /provisioning/organizations
  *   header: x-admin-token: <POSTIZ_ADMIN_TOKEN>
- *   body:   { name, email }
+ *   body:   { name, email, channelLimits? }
  *   -> { organizationId, userId, email, password, apiKey }
+ *      (+ channelLimits, disabledChannels when channelLimits is sent)
  */
 @Controller('/provisioning')
 export class AdminProvisionController {
   constructor(
     private _organizationService: OrganizationService,
-    private _usersService: UsersService
+    private _usersService: UsersService,
+    private _integrationService: IntegrationService,
+    private _integrationManager: IntegrationManager
   ) {}
+
+  private assertAdmin(adminToken: string) {
+    const expected = process.env.POSTIZ_ADMIN_TOKEN;
+    if (!expected || !adminToken || adminToken !== expected) {
+      throw new UnauthorizedException('Invalid admin token');
+    }
+  }
+
+  /** The org, or 404; 409 once it was deleted. */
+  private async liveOrg(adminToken: string, id: string) {
+    this.assertAdmin(adminToken);
+    const org = await this._organizationService.getOrgById(id);
+    if (!org) throw new NotFoundException('Organization not found');
+    if (org.deletedAt) throw new ConflictException('Organization was deleted');
+    return org;
+  }
+
+  /**
+   * Admin lifecycle, all gated by x-admin-token:
+   *
+   *   POST   /provisioning/organizations/:id/disable         -> { organizationId, disabled: true }
+   *   POST   /provisioning/organizations/:id/enable          -> { organizationId, disabled: false }
+   *   POST   /provisioning/organizations/:id/rotate-api-key  -> { organizationId, apiKey }
+   *   DELETE /provisioning/organizations/:id                 -> { organizationId, deleted: true, channels, posts }
+   *
+   * Disabled: the API key and OAuth tokens get 403, connect links get 403,
+   * scheduled posts are not published. Channels and posts are kept, so enable
+   * restores everything. Delete is irreversible (see deleteOrganization).
+   */
+  @Post('/organizations/:id/disable')
+  @HttpCode(200)
+  async disableOrganization(
+    @Headers('x-admin-token') adminToken: string,
+    @Param('id') id: string
+  ) {
+    await this.liveOrg(adminToken, id);
+    await this._organizationService.setDisabled(id, true);
+    return { organizationId: id, disabled: true };
+  }
+
+  @Post('/organizations/:id/enable')
+  @HttpCode(200)
+  async enableOrganization(
+    @Headers('x-admin-token') adminToken: string,
+    @Param('id') id: string
+  ) {
+    await this.liveOrg(adminToken, id);
+    await this._organizationService.setDisabled(id, false);
+    return { organizationId: id, disabled: false };
+  }
+
+  @Post('/organizations/:id/rotate-api-key')
+  @HttpCode(200)
+  async rotateApiKey(
+    @Headers('x-admin-token') adminToken: string,
+    @Param('id') id: string
+  ) {
+    await this.liveOrg(adminToken, id);
+    const updated = await this._organizationService.updateApiKey(id);
+    return { organizationId: id, apiKey: updated.apiKey };
+  }
+
+  @Delete('/organizations/:id')
+  async deleteOrganization(
+    @Headers('x-admin-token') adminToken: string,
+    @Param('id') id: string
+  ) {
+    await this.liveOrg(adminToken, id);
+    const removed = await this._organizationService.deleteOrganization(id);
+    return { organizationId: id, deleted: true, ...removed };
+  private parseLimits(value: unknown) {
+    try {
+      return parseChannelLimits(
+        value,
+        this._integrationManager.getAllowedSocialsIntegrations()
+      );
+    } catch (err: any) {
+      throw new BadRequestException(err.message);
+    }
+  }
+
+  /**
+   * Saves the limits, then disables the newest active channels over them and
+   * enables channels they had disabled once there is room again.
+   */
+  private async applyLimits(orgId: string, value: unknown) {
+    const limits = this.parseLimits(value);
+    const saved = await this._organizationService.setChannelLimits(
+      orgId,
+      limits
+    );
+    const { disabled, enabled } =
+      await this._integrationService.applyChannelLimits(orgId, limits);
+    return {
+      channelLimits: saved.channelLimits ?? null,
+      disabledChannels: disabled,
+      enabledChannels: enabled,
+    };
+  }
+
+  /**
+   *   PATCH /provisioning/organizations/:id
+   *   header: x-admin-token: <POSTIZ_ADMIN_TOKEN>
+   *   body:   { channelLimits: { youtube: 2, x: 1 } | null }
+   *   -> { organizationId, channelLimits, disabledChannels, enabledChannels }
+   *
+   * Limits count active channels (not disabled, not deleted) per provider and
+   * are enforced when a channel is connected, a page is selected or a channel
+   * is enabled. Lowering a limit keeps the oldest channels and disables the
+   * rest (disabledByLimit); raising or removing it enables those again, oldest
+   * first. Channels the user disabled stay disabled. Providers without a
+   * limit, and orgs with null, are unlimited.
+   */
+  @Patch('/organizations/:id')
+  async updateOrganization(
+    @Headers('x-admin-token') adminToken: string,
+    @Param('id') id: string,
+    @Body() body: UpdateOrgDto
+  ) {
+    this.assertAdmin(adminToken);
+    if (!(await this._organizationService.getOrgById(id))) {
+      throw new NotFoundException('Organization not found');
+    }
+    return {
+      organizationId: id,
+      ...(await this.applyLimits(id, body.channelLimits)),
+    };
+  }
 
   @Post('/organizations')
   async createOrganization(
     @Headers('x-admin-token') adminToken: string,
     @Body() body: ProvisionOrgDto
   ) {
-    const expected = process.env.POSTIZ_ADMIN_TOKEN;
-    if (!expected || !adminToken || adminToken !== expected) {
-      throw new UnauthorizedException('Invalid admin token');
+    this.assertAdmin(adminToken);
+    if (body.channelLimits !== undefined) {
+      this.parseLimits(body.channelLimits);
     }
 
     // Idempotent: a LOCAL user with this email may already exist (client
@@ -73,7 +226,16 @@ export class AdminProvisionController {
         const fullExisting = await this._organizationService.getOrgById(
           existingOrg.id
         );
+        if (fullExisting?.deletedAt) {
+          // Its key is revoked; returning it would hand back a dead org.
+          throw new ConflictException('Organization was deleted');
+        }
+        const limits =
+          body.channelLimits !== undefined
+            ? await this.applyLimits(existingOrg.id, body.channelLimits)
+            : {};
         return {
+          ...limits,
           organizationId: existingOrg.id,
           userId: existingUser.id,
           email: body.email,
@@ -104,10 +266,16 @@ export class AdminProvisionController {
       await this._usersService.activateUser(userId);
     }
 
+    const limits =
+      body.channelLimits !== undefined
+        ? await this.applyLimits(org.id, body.channelLimits)
+        : {};
+
     // L'apiKey stockée est la clé utilisable telle quelle par l'API publique.
     const full = await this._organizationService.getOrgById(org.id);
 
     return {
+      ...limits,
       organizationId: org.id,
       userId,
       email: body.email,

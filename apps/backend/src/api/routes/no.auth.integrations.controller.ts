@@ -84,6 +84,9 @@ export class NoAuthIntegrationsController {
     }
 
     const org = await this._organizationService.getOrgById(organization);
+    if (!org || org.disabledAt) {
+      throw new Error('Organization not found');
+    }
 
     if (!integrationProvider.customFields) {
       await ioRedis.del(`login:${body.state}`);
@@ -338,6 +341,9 @@ export class NoAuthIntegrationsController {
     }
 
     const org = await this._organizationService.getOrgById(organization);
+    if (!org || org.disabledAt) {
+      throw new Error('Organization not found');
+    }
 
     const result = await this._integrationService.saveProviderPage(org.id, id, body);
 
@@ -423,7 +429,7 @@ export class NoAuthIntegrationsController {
       const supplied = error instanceof HttpException ? error.getResponse() : undefined;
       const known = typeof supplied === 'object' ? (supplied as any)?.code : undefined;
       const expired = ['Invalid state', 'Organization not found'].includes(error?.message);
-      const code = ['SESSION_EXPIRED', 'INVALID_ATTEMPT'].includes(known) ? known
+      const code = ['SESSION_EXPIRED', 'INVALID_ATTEMPT', 'CHANNEL_LIMIT'].includes(known) ? known
         : expired ? 'SESSION_EXPIRED' : error instanceof NotEnoughScopes ? 'PROVIDER_REJECTED'
         : pendingId ? 'SAVE_FAILED' : 'CONNECTION_FAILED';
       const providerFailure = error instanceof ProviderConnectionError
