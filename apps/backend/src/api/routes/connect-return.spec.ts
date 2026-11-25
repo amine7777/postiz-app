@@ -135,18 +135,34 @@ describe('external OAuth contract',()=>{
   expect(f.store.get(`redirect:${state}`)).toBe('https://postiz.cloudeefy.io/connect/token?success=linkedin-page');
   expect(f.store.has(`connect-context:${state}`)).toBe(false);
  });
- it('bounds abandoned attempts without evicting active tabs',async()=>{
-  const f=fixture();const cookies:Record<string,string>={};
-  for(let i=0;i<4;i++){
+ it('bounds abandoned attempts by dropping the oldest, never by refusing a new one',async()=>{
+  const now=jest.spyOn(Date,'now');const start=1_800_000_000_000;
+  try{
+   const f=fixture();const cookies:Record<string,string>={};const names:string[]=[];const states:string[]=[];
+   for(let i=0;i<8;i++){
+    now.mockReturnValue(start+i*1000);
     const result=await f.links.getOAuthUrl('token','linkedin-page','https://app.plumeza.io/connect/token');
-    await f.links.start(result.url.split('/').pop()!,f.response as any,{cookies} as any);
-    const [name,value]=f.response.cookie.mock.calls[i];cookies[name]=value;
-  }
+    states.push(JSON.parse(f.store.get('connect-bootstrap:'+result.url.split('/').pop())!).state);
+    // Newest first, so the result cannot depend on the order the browser sends.
+    await f.links.start(result.url.split('/').pop()!,f.response as any,{cookies:Object.fromEntries(Object.entries(cookies).reverse())} as any);
+    expect(f.response.redirect).toHaveBeenLastCalledWith(expect.stringContaining('https://linkedin.com/oauth?state='));
+    const [name,value]=f.response.cookie.mock.calls[i];cookies[name]=value;names.push(name);
+    for(const [gone] of f.response.clearCookie.mock.calls) delete cookies[gone];
+    expect(Object.keys(cookies)).toEqual(names.slice(-4));
+   }
+   // An evicted attempt that is finished later still knows where to return.
+   const late=await (f.controller as any).connectOutcome(states[0],'linkedin-page',undefined,async()=>({id:'saved-id'}));
+   expect(late.returnURL).toBe('https://app.plumeza.io/connect/token');
+   expect(late.receipt).toMatch(/^[0-9a-f-]{36}$/);
+  }finally{now.mockRestore();}
+ });
+ it('clears forged and expired attempts without counting them',async()=>{
+  const f=fixture();
+  const cookies=Object.fromEntries(Array.from({length:6},(_,i)=>['connect-return-forged'+i,'bad.value']));
   const result=await f.links.getOAuthUrl('token','linkedin-page','https://app.plumeza.io/connect/token');
   await f.links.start(result.url.split('/').pop()!,f.response as any,{cookies} as any);
-  expect(f.response.cookie).toHaveBeenCalledTimes(4);
-  expect(f.response.clearCookie).not.toHaveBeenCalled();
-  expect(f.response.redirect).toHaveBeenLastCalledWith('https://app.plumeza.io/connect/error?code=CONNECTION_FAILED');
+  expect(f.response.clearCookie).toHaveBeenCalledTimes(6);
+  expect(f.response.redirect).toHaveBeenLastCalledWith(expect.stringContaining('https://linkedin.com/oauth?state='));
  });
  it('accepts any listed return origin and sends its errors back to it',async()=>{
   process.env.CONNECT_RETURN_ORIGIN='https://app-one.example.com, https://app-two.example.com';
@@ -155,14 +171,9 @@ describe('external OAuth contract',()=>{
   const raw=JSON.parse(f.store.get('connect-bootstrap:'+first.url.split('/').pop())!);
   await f.links.start(first.url.split('/').pop()!,f.response as any,{cookies} as any);
   expect(readReturnContext(raw.state,f.response.cookie.mock.calls[0][1])).toBe('https://app-two.example.com/connect/token');
-  for(let i=0;i<4;i++){
-    const result=await f.links.getOAuthUrl('token','linkedin-page','https://app-one.example.com/connect/token');
-    await f.links.start(result.url.split('/').pop()!,f.response as any,{cookies} as any);
-    const [name,value]=f.response.cookie.mock.calls[i+1];cookies[name]=value;
-  }
-  const overflow=await f.links.getOAuthUrl('token','linkedin-page','https://app-two.example.com/connect/token');
-  await f.links.start(overflow.url.split('/').pop()!,f.response as any,{cookies} as any);
-  expect(f.response.redirect).toHaveBeenLastCalledWith('https://app-two.example.com/connect/error?code=CONNECTION_FAILED');
+  f.store.set('connect-bootstrap:unsafe',JSON.stringify({...raw,url:'http://linkedin.com/oauth'}));
+  await f.links.start('unsafe',f.response as any,{cookies} as any);
+  expect(f.response.redirect).toHaveBeenLastCalledWith('https://app-two.example.com/connect/error?code=SESSION_EXPIRED');
  });
  it('refuses an arbitrary browser return origin' ,async()=>{
   const {links}=fixture();await expect(links.getOAuthUrl('token','linkedin-page','https://evil.example/connect/token')).rejects.toMatchObject({status:400});

@@ -10,6 +10,9 @@ import { randomUUID } from 'node:crypto';
 import { Request, Response } from 'express';
 import { safeConnectReturn, returnCookieName, signReturnContext, RETURN_TTL, connectOrigin, readReturnContext } from '@gitroom/helpers/auth/connect-return';
 
+// Unfinished attempts a browser remembers at once, so cookies cannot pile up.
+const MAX_RETURN_COOKIES = 4;
+
 @ApiTags('Connect Links')
 @Controller('/connect')
 export class ConnectLinkController {
@@ -202,18 +205,21 @@ export class ConnectLinkController {
       returnOrigin = new URL(safeConnectReturn(returnURL)).origin;
       const target = new URL(url);
       if (target.protocol !== 'https:') throw new Error('Invalid provider URL');
-      // Bound abandoned attempts without evicting another active browser tab.
-      let active = 0;
+      // Bound abandoned attempts: keep the newest, drop the oldest. A cookie is
+      // only the backup return address. An evicted attempt that is finished
+      // later still gets its return URL from the attempt stored in Redis.
+      const kept: { name: string; exp: number }[] = [];
       for (const [name, value] of Object.entries(request?.cookies || {})) {
         if (!name.startsWith('connect-return-')) continue;
-        let valid = false;
+        let exp = 0;
         try {
           const payload = JSON.parse(Buffer.from(String(value).split('.')[0], 'base64url').toString());
-          valid = name === returnCookieName(payload.state) && !!readReturnContext(payload.state, String(value));
+          if (name === returnCookieName(payload.state) && readReturnContext(payload.state, String(value))) exp = payload.exp;
         } catch { /* malformed or expired cookie */ }
-        if (valid) active++; else response.clearCookie(name, { path: '/' });
+        if (exp) kept.push({ name, exp }); else response.clearCookie(name, { path: '/' });
       }
-      if (active >= 4) return response.redirect(`${returnOrigin}/connect/error?code=CONNECTION_FAILED`);
+      kept.sort((a, b) => b.exp - a.exp);
+      for (const { name } of kept.slice(MAX_RETURN_COOKIES - 1)) response.clearCookie(name, { path: '/' });
       response.cookie(returnCookieName(state), signReturnContext(state, returnURL), {
         httpOnly: true, secure: process.env.FRONTEND_URL?.startsWith('https://'),
         sameSite: 'lax', path: '/', maxAge: RETURN_TTL * 1000,
