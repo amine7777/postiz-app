@@ -172,6 +172,9 @@ export class PostsRepository {
         releaseURL: true,
         releaseId: true,
         state: true,
+        // Why a post failed (set by changeState), so an app reading its own
+        // posts can show the platform's reason instead of a bare ERROR.
+        error: true,
         intervalInDays: true,
         group: true,
         tags: {
