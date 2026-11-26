@@ -15,6 +15,7 @@ import {
 import {
   IsDefined,
   IsEmail,
+  IsIn,
   IsOptional,
   IsString,
   MaxLength,
@@ -42,6 +43,16 @@ class ProvisionOrgDto {
   /** Optional { [provider]: maxActiveChannels }; null clears. See PATCH below. */
   @IsOptional()
   channelLimits?: unknown;
+}
+
+class AddMemberDto {
+  @IsEmail()
+  @IsDefined()
+  email: string;
+
+  @IsOptional()
+  @IsIn(['ADMIN', 'USER'])
+  role?: 'ADMIN' | 'USER';
 }
 
 class UpdateOrgDto {
@@ -141,6 +152,35 @@ export class AdminProvisionController {
     await this.liveOrg(adminToken, id);
     const removed = await this._organizationService.deleteOrganization(id);
     return { organizationId: id, deleted: true, ...removed };
+  }
+
+  /**
+   *   POST /provisioning/organizations/:id/members
+   *   header: x-admin-token: <POSTIZ_ADMIN_TOKEN>
+   *   body:   { email, role?: 'ADMIN' | 'USER' }   (role defaults to ADMIN)
+   *   -> { organizationId, userId, role }
+   *
+   * Adds an existing login to the org, so the calling app's operator can open
+   * every client org from one login (org switcher) and fix a channel. The
+   * login must already exist (404 otherwise); no account is created and no
+   * email is sent. Idempotent; the org's owner keeps SUPERADMIN.
+   */
+  @Post('/organizations/:id/members')
+  @HttpCode(200)
+  async addMember(
+    @Headers('x-admin-token') adminToken: string,
+    @Param('id') id: string,
+    @Body() body: AddMemberDto
+  ) {
+    await this.liveOrg(adminToken, id);
+    const user = await this._usersService.getUserByEmail(body.email);
+    if (!user) throw new NotFoundException('No login with that email');
+    const member = await this._organizationService.upsertMember(
+      id,
+      user.id,
+      body.role || 'ADMIN'
+    );
+    return { organizationId: id, userId: user.id, role: member.role };
   }
 
   private parseLimits(value: unknown) {

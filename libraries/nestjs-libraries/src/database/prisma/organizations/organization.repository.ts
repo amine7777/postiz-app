@@ -261,6 +261,23 @@ export class OrganizationRepository {
     });
   }
 
+  /**
+   * Puts the user in the org with this role, or sets their role when they are
+   * in it already. A SUPERADMIN (the org's owner) is never lowered.
+   */
+  async upsertMember(orgId: string, userId: string, role: 'ADMIN' | 'USER') {
+    const where = { userId_organizationId: { userId, organizationId: orgId } };
+    const existing = await this._userOrg.model.userOrganization.findUnique({
+      where,
+    });
+    if (existing?.role === Role.SUPERADMIN) return existing;
+    return this._userOrg.model.userOrganization.upsert({
+      where,
+      update: { role, disabled: false },
+      create: { role, userId, organizationId: orgId },
+    });
+  }
+
   async addUserToOrg(
     userId: string,
     id: string,
