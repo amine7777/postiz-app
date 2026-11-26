@@ -278,6 +278,14 @@ export class OrganizationRepository {
     });
   }
 
+  /** Takes the user out of the org; the org's owner (SUPERADMIN) stays. */
+  async removeMember(orgId: string, userId: string) {
+    const { count } = await this._userOrg.model.userOrganization.deleteMany({
+      where: { userId, organizationId: orgId, role: { not: Role.SUPERADMIN } },
+    });
+    return count;
+  }
+
   async addUserToOrg(
     userId: string,
     id: string,

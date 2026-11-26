@@ -160,8 +160,8 @@ export class AdminProvisionController {
    *   body:   { email, role?: 'ADMIN' | 'USER' }   (role defaults to ADMIN)
    *   -> { organizationId, userId, role }
    *
-   * Adds an existing login to the org, so the calling app's operator can open
-   * every client org from one login (org switcher) and fix a channel. The
+   * Adds an existing login to the org, so the calling app's support can open
+   * that client org (org switcher) and fix a channel. The
    * login must already exist (404 otherwise); no account is created and no
    * email is sent. Idempotent; the org's owner keeps SUPERADMIN.
    */
@@ -181,6 +181,30 @@ export class AdminProvisionController {
       body.role || 'ADMIN'
     );
     return { organizationId: id, userId: user.id, role: member.role };
+  }
+
+  /**
+   *   DELETE /provisioning/organizations/:id/members/:email
+   *   -> { organizationId, removed: 0 | 1 }
+   *
+   * Ends that access again (time-limited support access). The org's owner is
+   * never removed. Works on deleted orgs too, so access can always be ended.
+   */
+  @Delete('/organizations/:id/members/:email')
+  async removeMember(
+    @Headers('x-admin-token') adminToken: string,
+    @Param('id') id: string,
+    @Param('email') email: string
+  ) {
+    this.assertAdmin(adminToken);
+    if (!(await this._organizationService.getOrgById(id))) {
+      throw new NotFoundException('Organization not found');
+    }
+    const user = await this._usersService.getUserByEmail(email);
+    const removed = user
+      ? await this._organizationService.removeMember(id, user.id)
+      : 0;
+    return { organizationId: id, removed };
   }
 
   private parseLimits(value: unknown) {

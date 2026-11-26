@@ -83,6 +83,7 @@ describe('admin org lifecycle routes', () => {
     upsertMember: jest.fn<(...args: any[]) => Promise<any>>(
       async (_org: string, _user: string, role: string) => ({ role })
     ),
+    removeMember: jest.fn<(...args: any[]) => Promise<any>>(async () => 1),
   };
   const users = { getUserByEmail: jest.fn<(...args: any[]) => Promise<any>>() };
   // Built untyped: other PRs add constructor arguments these routes never use.
@@ -163,6 +164,36 @@ describe('admin org lifecycle routes', () => {
         email: 'tenant@app-one.example.com',
       })
     ).rejects.toMatchObject({ status: 409 });
+  });
+
+  describe('remove member', () => {
+    it('needs the admin token; unknown org is 404', async () => {
+      await expect(controller.removeMember('wrong', 'org-1', 'op@x.io')).rejects.toMatchObject({
+        status: 401,
+      });
+      organizations.getOrgById.mockResolvedValue(null);
+      await expect(controller.removeMember(token, 'missing', 'op@x.io')).rejects.toMatchObject({
+        status: 404,
+      });
+      expect(organizations.removeMember).not.toHaveBeenCalled();
+    });
+
+    it('removes the login, also from a deleted org; unknown login removes nothing', async () => {
+      users.getUserByEmail.mockResolvedValue({ id: 'user-op' });
+      organizations.getOrgById.mockResolvedValue({ ...live, deletedAt: new Date() });
+      await expect(controller.removeMember(token, 'org-1', 'op@x.io')).resolves.toEqual({
+        organizationId: 'org-1',
+        removed: 1,
+      });
+      expect(organizations.removeMember).toHaveBeenLastCalledWith('org-1', 'user-op');
+      users.getUserByEmail.mockResolvedValue(null);
+      organizations.removeMember.mockClear();
+      await expect(controller.removeMember(token, 'org-1', 'nobody@x.io')).resolves.toEqual({
+        organizationId: 'org-1',
+        removed: 0,
+      });
+      expect(organizations.removeMember).not.toHaveBeenCalled();
+    });
   });
 
   describe('add member', () => {

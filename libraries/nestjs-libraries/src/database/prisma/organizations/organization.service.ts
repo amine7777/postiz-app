@@ -40,6 +40,10 @@ export class OrganizationService {
     return this._organizationRepository.upsertMember(orgId, userId, role);
   }
 
+  removeMember(orgId: string, userId: string) {
+    return this._organizationRepository.removeMember(orgId, userId);
+  }
+
   addUserToOrg(
     userId: string,
     id: string,
