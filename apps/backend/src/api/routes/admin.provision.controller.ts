@@ -55,6 +55,12 @@ class AddMemberDto {
   role?: 'ADMIN' | 'USER';
 }
 
+class RemoveMemberDto {
+  @IsEmail()
+  @IsDefined()
+  email: string;
+}
+
 class UpdateOrgDto {
   @IsDefined()
   channelLimits: unknown;
@@ -184,23 +190,25 @@ export class AdminProvisionController {
   }
 
   /**
-   *   DELETE /provisioning/organizations/:id/members/:email
+   *   POST /provisioning/organizations/:id/members/remove
+   *   body: { email }   (in the body, so no email lands in access logs)
    *   -> { organizationId, removed: 0 | 1 }
    *
    * Ends that access again (time-limited support access). The org's owner is
    * never removed. Works on deleted orgs too, so access can always be ended.
    */
-  @Delete('/organizations/:id/members/:email')
+  @Post('/organizations/:id/members/remove')
+  @HttpCode(200)
   async removeMember(
     @Headers('x-admin-token') adminToken: string,
     @Param('id') id: string,
-    @Param('email') email: string
+    @Body() body: RemoveMemberDto
   ) {
     this.assertAdmin(adminToken);
     if (!(await this._organizationService.getOrgById(id))) {
       throw new NotFoundException('Organization not found');
     }
-    const user = await this._usersService.getUserByEmail(email);
+    const user = await this._usersService.getUserByEmail(body.email);
     const removed = user
       ? await this._organizationService.removeMember(id, user.id)
       : 0;
